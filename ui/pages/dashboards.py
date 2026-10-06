@@ -55,7 +55,7 @@ def render_cost_dashboard(token: str):
         llm_spend = metrics.get("llm_spend_usd_30d", 0.0)
         st.metric("LLM Spend (30d)", f"${llm_spend:.4f}",
                   delta=f"${metrics.get('llm_spend_delta', 0):.4f}",
-                  help="Total spend via LiteLLM proxy (Vertex AI / Gemini Flash)")
+                  help="Estimated from Groq token usage recorded per call (llm_calls)")
 
     with col2:
         gate_pass_rate = metrics.get("gate_pass_rate_pct", 0.0)

@@ -25,7 +25,7 @@ def _base_postprocess(code, cfg):
             if has_upd:
                 hook += "        if (this.updatedAt == null) this.updatedAt = now;\n"
             hook += "    }\n"
-            if has_upd:
+            if has_upd and "PreUpdate" not in code:
                 hook += "\n    @jakarta.persistence.PreUpdate\n    protected void onUpdate() {\n        this.updatedAt = java.time.LocalDateTime.now();\n    }\n"
             code = code[:m.end()] + hook + code[m.end():]
     return code
@@ -186,3 +186,12 @@ def postprocess_entity(code, cfg):
             "if (this.createdAt == null) this.createdAt = now;\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT placeholder",
             1)
     return add_missing_accessors(code)
+
+
+# --- dedupe hook: remove members the model wrote twice (appended; original pipeline untouched) ---
+from tasks.dedupe_members import dedupe_class_members as _dedupe_members
+_prev_postprocess_entity = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    return _dedupe_members(_prev_postprocess_entity(code, cfg))

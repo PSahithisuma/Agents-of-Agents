@@ -158,7 +158,7 @@ else:
     <div style="background:#1a1a2e;border:1px solid #2d2d4e;border-radius:12px;padding:2rem;text-align:center;">
         <div style="font-size:3rem;margin-bottom:0.5rem;">💚</div>
         <div style="font-size:1.5rem;font-weight:700;color:#4ade80;">$0.00</div>
-        <div style="color:#7878aa;margin-top:0.5rem;">No spend recorded — all jobs served from cache</div>
+        <div style="color:#7878aa;margin-top:0.5rem;">No spend recorded yet today</div>
     </div>
     """, unsafe_allow_html=True)
 
