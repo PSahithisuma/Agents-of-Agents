@@ -1,0 +1,838 @@
+import asyncio, json, logging, httpx, os, base64
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+from tasks.postprocess import strip_fences, table_name, postprocess_entity, generate_application_class
+from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event
+
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GROQ_MODEL = "qwen/qwen3.8-27b"
+GITEA_URL = "http://gitea:3000"
+GITEA_TOKEN = os.environ["GITEA_TOKEN"]
+
+PACK_CONFIG = {
+    "banking":   {"entities": 10, "compliance": "RBI Tier-1", "framework": "Spring Boot", "tables": 24, "package": "com.vibebank", "entity": "BankAccount"},
+    "ecommerce": {"entities": 11, "compliance": "GDPR",       "framework": "Spring Boot", "tables": 28, "package": "com.omnistore", "entity": "Product"},
+    "logistics": {"entities": 7,  "compliance": "ISO 27001",  "framework": "Spring Boot", "tables": 18, "package": "com.logiroute",  "entity": "Shipment"},
+    "custom":    {"entities": 5,  "compliance": "Custom",     "framework": "Spring Boot", "tables": 20, "package": "com.customapp",  "entity": "CoreEntity"},
+}
+
+ERD_TEMPLATES = {
+    "banking": """erDiagram
+    CUSTOMER ||--o{ ACCOUNT : owns
+    CUSTOMER ||--o{ KYC_DOCUMENT : submits
+    CUSTOMER ||--o{ BENEFICIARY : manages
+    ACCOUNT ||--o{ TRANSACTION : records
+    ACCOUNT }o--|| BRANCH : belongs_to
+    ACCOUNT }o--|| PRODUCT : typed_by
+    ACCOUNT ||--o| NOMINEE : has
+    TRANSACTION ||--o| FRAUD_ALERT : triggers
+    TRANSACTION }o--o| BATCH_JOB : grouped_in
+    TRANSACTION ||--o{ AUDIT_LOG : logged_in
+    CUSTOMER { uuid customer_id PK string customer_ref UK string first_name string last_name date date_of_birth string pan_number restricted string aadhaar_hash restricted enum kyc_status enum risk_category enum customer_segment boolean is_active datetime onboarded_at uuid branch_id FK }
+    ACCOUNT { uuid account_id PK string account_number UK uuid customer_id FK uuid branch_id FK uuid product_id FK enum account_type enum status decimal balance decimal available_balance decimal hold_amount decimal overdraft_limit string ifsc_code uuid nominee_id FK datetime dormancy_trigger_at datetime opened_at }
+    TRANSACTION { uuid transaction_id PK string transaction_ref UK string rrn uuid from_account_id FK uuid to_account_id FK uuid beneficiary_id FK decimal amount enum transaction_type enum payment_rail enum channel enum status decimal balance_before decimal balance_after uuid approved_by uuid batch_id FK boolean is_flagged datetime initiated_at }
+    BENEFICIARY { uuid beneficiary_id PK uuid customer_id FK string beneficiary_name string ifsc_code string account_number restricted datetime cooldown_until boolean is_verified enum added_via }
+    KYC_DOCUMENT { uuid document_id PK uuid customer_id FK enum document_type string document_number restricted string document_hash string issuing_authority date expiry_date enum verification_status datetime verified_at }
+    BRANCH { uuid branch_id PK string ifsc_code UK string micr_code string branch_name string city string state string pin_code boolean is_active }
+    NOMINEE { uuid nominee_id PK uuid account_id FK string name enum relationship date date_of_birth decimal share_percentage boolean is_minor }
+    PRODUCT { uuid product_id PK string product_code UK string product_name enum account_type decimal minimum_balance decimal daily_txn_limit decimal rtgs_minimum_amount boolean is_active }
+    FRAUD_ALERT { uuid alert_id PK uuid transaction_id FK uuid customer_id FK enum alert_type enum severity decimal risk_score enum status datetime resolved_at }
+    AUDIT_LOG { uuid audit_id PK string entity_type uuid entity_id enum action json old_value json new_value string performed_by_role string ip_address datetime timestamp }
+    BATCH_JOB { uuid batch_id PK enum batch_type datetime scheduled_at enum status int total_records int processed_records int failed_records decimal total_amount }""",
+
+    "ecommerce": """erDiagram
+    CUSTOMER ||--o{ ADDRESS : has
+    CUSTOMER ||--o{ ORDER : places
+    CUSTOMER ||--o{ CART : owns
+    CUSTOMER ||--o{ REVIEW : writes
+    ORDER ||--o{ PAYMENT : paid_by
+    CART ||--o{ CART_ITEM : contains
+    PRODUCT ||--o{ CART_ITEM : in
+    PRODUCT ||--o{ REVIEW : receives
+    PRODUCT }o--|| CATEGORY : belongs_to
+    PRODUCT ||--o{ INVENTORY : stocked_in
+    CUSTOMER { uuid customer_id PK string email UK string first_name string last_name boolean marketing_consent boolean data_processing_consent datetime consent_recorded_at enum status enum tier int loyalty_points }
+    ADDRESS { uuid address_id PK uuid customer_id FK enum address_type string line1 string city string state string pin_code boolean is_default }
+    CATEGORY { uuid category_id PK string name string slug UK uuid parent_category_id FK boolean is_active }
+    PRODUCT { uuid product_id PK string sku UK string name decimal base_price decimal selling_price decimal tax_rate string hsn_code enum status boolean is_returnable int return_window_days }
+    INVENTORY { uuid inventory_id PK uuid product_id FK uuid warehouse_id FK int quantity_available int quantity_reserved int reorder_level }
+    CART { uuid cart_id PK uuid customer_id FK enum status decimal subtotal decimal tax_amount decimal total_amount datetime expires_at }
+    CART_ITEM { uuid cart_item_id PK uuid cart_id FK uuid product_id FK int quantity decimal unit_price }
+    ORDER { uuid order_id PK string order_number UK uuid customer_id FK uuid shipping_address_id FK enum status decimal total_amount enum payment_status datetime placed_at datetime delivered_at }
+    PAYMENT { uuid payment_id PK uuid order_id FK decimal amount enum payment_method enum gateway string gateway_transaction_id enum status decimal refund_amount }
+    REVIEW { uuid review_id PK uuid product_id FK uuid customer_id FK int rating string title enum status boolean is_verified_purchase }""",
+
+    "logistics": """erDiagram
+    SHIPPER ||--o{ SHIPMENT : books
+    SHIPMENT ||--o{ TRACKING_EVENT : has
+    SHIPMENT }o--|| VEHICLE : assigned_to
+    SHIPMENT }o--|| DRIVER : delivered_by
+    SHIPMENT }o--|| ROUTE : follows
+    VEHICLE }o--|| CARRIER : owned_by
+    DRIVER }o--|| CARRIER : employed_by
+    ROUTE }o--|| WAREHOUSE : from_hub
+    ROUTE }o--|| WAREHOUSE : to_hub
+    SHIPPER { uuid shipper_id PK string company_name string gstin string contact_person string email string phone decimal credit_limit decimal outstanding_amount boolean is_active }
+    SHIPMENT { uuid shipment_id PK string awb_number UK uuid shipper_id FK string consignee_name string consignee_phone enum service_type enum shipment_type enum status int weight_grams decimal declared_value decimal cod_amount boolean is_cod boolean is_fragile uuid vehicle_id FK uuid driver_id FK uuid route_id FK datetime estimated_delivery_at datetime actual_delivery_at string delivery_otp int attempt_count }
+    TRACKING_EVENT { uuid event_id PK uuid shipment_id FK enum event_type string location_name string city decimal latitude decimal longitude uuid recorded_by FK datetime event_at }
+    VEHICLE { uuid vehicle_id PK string registration_number UK enum vehicle_type uuid carrier_id FK uuid driver_id FK decimal capacity_kg enum status decimal current_latitude decimal current_longitude date insurance_expiry date permit_expiry }
+    DRIVER { uuid driver_id PK uuid carrier_id FK string employee_code UK string first_name string last_name string phone string license_number date license_expiry enum status int total_deliveries decimal success_rate }
+    ROUTE { uuid route_id PK string route_code UK uuid origin_hub_id FK uuid destination_hub_id FK decimal distance_km int estimated_transit_hours boolean is_active }
+    WAREHOUSE { uuid warehouse_id PK string warehouse_code UK string name enum type string city string state string pin_code decimal capacity_sqft boolean is_active }""",
+}
+
+
+import re as _re
+
+def strip_fences(code: str) -> str:
+    code = code.strip()
+    code = _re.sub(r"^```[a-zA-Z]*\r?\n?", "", code)
+    code = _re.sub(r"\n?```\s*$", "", code)
+    return code.strip()
+
+LLM_USAGE = []  # filled by call_groq; the job code records and clears it
+
+async def call_groq(prompt):
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
+        )
+        if resp.status_code == 429:
+            logger.warning("Rate limited, waiting 35s...")
+            await asyncio.sleep(35)
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
+            )
+        data = resp.json()
+        if resp.status_code != 200 or "choices" not in data:
+            raise RuntimeError(f"Groq error {resp.status_code}: {str(data)[:200]}")
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError("LLM output truncated (finish_reason=length); raise max_tokens or split the entity")
+        _u = data.get("usage") or {}
+        LLM_USAGE.append({"model": GROQ_MODEL, "prompt_tokens": int(_u.get("prompt_tokens", 0)), "completion_tokens": int(_u.get("completion_tokens", 0))})
+        return strip_fences(choice["message"]["content"])
+
+async def push_file_to_gitea(repo_name, file_path, content, message="feat: AI-generated by Agents of Agents"):
+    try:
+        code_b64 = base64.b64encode(content.encode()).decode()
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{GITEA_URL}/api/v1/repos/vibeforge-admin/{repo_name}/contents/{file_path}",
+                headers={"Authorization": f"token {GITEA_TOKEN}"},
+                json={"message": message, "content": code_b64})
+            return r.status_code == 201
+    except Exception as e:
+        logger.error(f"Gitea push error {file_path}: {e}")
+        return False
+
+def generate_pom_xml(cfg):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+    </parent>
+    <groupId>{cfg["package"]}</groupId>
+    <artifactId>{cfg["entity"].lower()}-service</artifactId>
+    <version>1.0.0</version>
+    <name>{cfg["entity"]} Service — Generated by Agents of Agents</name>
+    <description>{cfg["compliance"]} compliant {cfg["entity"]} microservice</description>
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+    <dependencies>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+        <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
+        <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
+        <dependency><groupId>org.springdoc</groupId><artifactId>springdoc-openapi-starter-webmvc-ui</artifactId><version>2.3.0</version></dependency>
+        <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>
+        </plugins>
+    </build>
+</project>"""
+
+def generate_application_yml(cfg, pack):
+    return f"""spring:
+  application:
+    name: {cfg["entity"].lower()}-service
+  datasource:
+    url: ${{DB_URL:jdbc:postgresql://localhost:5432/{pack}db}}
+    username: ${{DB_USER:postgres}}
+    password: ${{DB_PASSWORD:}}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    {cfg["package"]}: INFO
+    org.springframework.web: WARN
+
+# Compliance: {cfg["compliance"]}
+# Generated by: Agents of Agents AI Platform
+# Oracle Cloud: India South (Hyderabad)"""
+
+def generate_repository(cfg):
+    entity = cfg["entity"]
+    pkg = cfg["package"]
+    return f"""package {pkg}.repository;
+
+import {pkg}.entity.{entity};
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Repository for {entity} — {cfg["compliance"]} compliant data access layer.
+ * Generated by Agents of Agents AI Platform.
+ */
+@Repository
+public interface {entity}Repository extends JpaRepository<{entity}, UUID> {{
+
+    List<{entity}> findByStatus(String status);
+
+    Optional<{entity}> findByIdAndTenantId(UUID id, UUID tenantId);
+
+    @Query("SELECT e FROM {entity} e WHERE e.createdAt >= :cutoff")
+    List<{entity}> findCreatedSince(@org.springframework.data.repository.query.Param("cutoff") java.time.LocalDateTime cutoff);
+
+    default List<{entity}> findRecentEntries() {{
+        return findCreatedSince(java.time.LocalDateTime.now().minusDays(30));
+    }}
+
+    long countByStatus(String status);
+}}"""
+
+def generate_service(cfg):
+    entity = cfg["entity"]
+    pkg = cfg["package"]
+    return f"""package {pkg}.service;
+
+import {pkg}.entity.{entity};
+import {pkg}.repository.{entity}Repository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Service layer for {entity} — {cfg["compliance"]} compliant business logic.
+ * Generated by Agents of Agents AI Platform.
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@Transactional
+public class {entity}Service {{
+
+    private final {entity}Repository repository;
+
+    public List<{entity}> findAll() {{
+        log.info("Fetching all {entity} records");
+        return repository.findAll();
+    }}
+
+    public Optional<{entity}> findById(UUID id) {{
+        log.info("Fetching {entity} by id: {{}}", id);
+        return repository.findById(id);
+    }}
+
+    public {entity} create({entity} entity) {{
+        log.info("Creating new {entity}");
+        // {cfg["compliance"]} compliance check
+        validate(entity);
+        return repository.save(entity);
+    }}
+
+    public {entity} update(UUID id, {entity} updated) {{
+        log.info("Updating {entity}: {{}}", id);
+        return repository.findById(id).map(existing -> {{
+            org.springframework.beans.BeanUtils.copyProperties(updated, existing, "id", "tenantId", "createdAt", "updatedAt");
+            return repository.save(existing);
+        }}).orElseThrow(() -> new RuntimeException("{entity} not found: " + id));
+    }}
+
+    public void delete(UUID id) {{
+        log.info("Deleting {entity}: {{}}", id);
+        repository.deleteById(id);
+    }}
+
+    private void validate({entity} entity) {{
+        // {cfg["compliance"]} validation rules
+        if (entity == null) {{
+            throw new IllegalArgumentException("{entity} cannot be null");
+        }}
+    }}
+}}"""
+
+def generate_controller(cfg):
+    entity = cfg["entity"]
+    pkg = cfg["package"]
+    entity_lower = entity[0].lower() + entity[1:]
+    return f"""package {pkg}.controller;
+
+import {pkg}.entity.{entity};
+import {pkg}.service.{entity}Service;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * REST Controller for {entity} — {cfg["compliance"]} compliant API layer.
+ * Generated by Agents of Agents AI Platform.
+ * Swagger UI: /swagger-ui.html
+ */
+@RestController
+@RequestMapping("/api/v1/{entity_lower}s")
+@RequiredArgsConstructor
+@Tag(name = "{entity} API", description = "{cfg["compliance"]} compliant {entity} management")
+public class {entity}Controller {{
+
+    private final {entity}Service service;
+
+    @GetMapping
+    @Operation(summary = "List all {entity} records")
+    public ResponseEntity<List<{entity}>> findAll() {{
+        return ResponseEntity.ok(service.findAll());
+    }}
+
+    @GetMapping("/{{id}}")
+    @Operation(summary = "Get {entity} by ID")
+    public ResponseEntity<{entity}> findById(@PathVariable UUID id) {{
+        return service.findById(id)
+            .map(ResponseEntity::ok)
+            .orElse(ResponseEntity.notFound().build());
+    }}
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Create new {entity}")
+    public ResponseEntity<{entity}> create(@jakarta.validation.Valid @RequestBody {entity} entity) {{
+        return ResponseEntity.status(HttpStatus.CREATED).body(service.create(entity));
+    }}
+
+    @PutMapping("/{{id}}")
+    @Operation(summary = "Update {entity}")
+    public ResponseEntity<{entity}> update(@PathVariable UUID id, @jakarta.validation.Valid @RequestBody {entity} entity) {{
+        return ResponseEntity.ok(service.update(id, entity));
+    }}
+
+    @DeleteMapping("/{{id}}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @Operation(summary = "Delete {entity}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {{
+        service.delete(id);
+        return ResponseEntity.noContent().build();
+    }}
+}}"""
+
+def generate_flyway_sql(cfg, pack):
+    entity = cfg["entity"]
+    table = table_name(entity)
+    if pack == "banking":
+        cols = """
+    account_number      VARCHAR(20)    NOT NULL UNIQUE,
+    iban                VARCHAR(34)    NOT NULL UNIQUE,
+    swift_bic           VARCHAR(11),
+    holder_full_name    VARCHAR(150)   NOT NULL,
+    holder_email        VARCHAR(100)   NOT NULL,
+    holder_phone        VARCHAR(20),
+    available_balance   DECIMAL(19,4)  NOT NULL DEFAULT 0,
+    nominee_name        VARCHAR(150),
+    balance             DECIMAL(19,4)  NOT NULL DEFAULT 0,
+    account_type        VARCHAR(30)    NOT NULL,
+    currency            VARCHAR(3)     NOT NULL DEFAULT 'INR',
+    status              VARCHAR(20)    NOT NULL DEFAULT 'ACTIVE',
+    aml_flag            BOOLEAN        DEFAULT FALSE,
+    rbi_audit_id        VARCHAR(50),
+    branch_code         VARCHAR(10),
+    ifsc_code           VARCHAR(11),
+    kyc_status          VARCHAR(20)    DEFAULT 'PENDING',
+    credit_limit        DECIMAL(19,4)  DEFAULT 0,
+    interest_rate       DECIMAL(5,2)   DEFAULT 0,
+    tenant_id           UUID           NOT NULL,"""
+    elif pack == "ecommerce":
+        cols = """
+    sku                 VARCHAR(50)    NOT NULL UNIQUE,
+    name                VARCHAR(200)   NOT NULL,
+    description         TEXT,
+    price               DECIMAL(19,4)  NOT NULL,
+    stock_quantity      INTEGER        NOT NULL DEFAULT 0,
+    category            VARCHAR(100),
+    brand               VARCHAR(100),
+    gst_hsn_code        VARCHAR(20),
+    gdpr_consent_req    BOOLEAN        DEFAULT FALSE,
+    seller_id           UUID,
+    weight              DECIMAL(10,3),
+    image_url           VARCHAR(500),
+    rating              DECIMAL(3,2)   DEFAULT 0,
+    review_count        INTEGER        DEFAULT 0,
+    discount_percent    DECIMAL(5,2)   DEFAULT 0,
+    tax_rate            DECIMAL(5,2)   DEFAULT 18,
+    status              VARCHAR(20)    NOT NULL DEFAULT 'ACTIVE',
+    tenant_id           UUID           NOT NULL,"""
+    elif pack == "logistics":
+        cols = """
+    vehicle_id          VARCHAR(50)    NOT NULL UNIQUE,
+    plate_number        VARCHAR(20)    NOT NULL UNIQUE,
+    driver_name         VARCHAR(150),
+    gps_lat             DOUBLE PRECISION,
+    gps_lng             DOUBLE PRECISION,
+    route_id            UUID,
+    cargo_weight        DECIMAL(10,3),
+    status              VARCHAR(20)    NOT NULL DEFAULT 'AVAILABLE',
+    iso_audit_id        VARCHAR(50),
+    last_checkpoint     VARCHAR(200),
+    fuel_level          DECIMAL(5,2),
+    speed_kmh           DECIMAL(6,2),
+    engine_status       VARCHAR(20)    DEFAULT 'OK',
+    waybill_number      VARCHAR(50),
+    tenant_id           UUID           NOT NULL,"""
+    else:
+        cols = """
+    name                VARCHAR(200)   NOT NULL,
+    description         TEXT,
+    status              VARCHAR(50)    NOT NULL DEFAULT 'ACTIVE',
+    category            VARCHAR(100),
+    reference_code      VARCHAR(100),
+    amount              DECIMAL(19,4),
+    quantity            INTEGER        DEFAULT 0,
+    owner_id            UUID,
+    notes               TEXT,
+    tenant_id           UUID           NOT NULL,"""
+
+    return f"""-- ============================================================
+-- {entity} Service — Flyway Migration V1
+-- Compliance: {cfg["compliance"]}
+-- Generated by: Agents of Agents AI Platform
+-- Oracle Cloud: India South (Hyderabad)
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS {table} (
+    id                  UUID           PRIMARY KEY DEFAULT uuid_generate_v4(),{cols}
+    created_at          TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- Performance Indexes
+CREATE INDEX idx_{table}_status    ON {table}(status);
+CREATE INDEX idx_{table}_tenant    ON {table}(tenant_id);
+CREATE INDEX idx_{table}_created   ON {table}(created_at DESC);
+
+-- Audit trigger
+CREATE OR REPLACE FUNCTION ensure_timestamps()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.created_at IS NULL THEN NEW.created_at = NOW(); END IF;
+        IF NEW.updated_at IS NULL THEN NEW.updated_at = NOW(); END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        NEW.updated_at = NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER {table}_timestamps
+    BEFORE INSERT OR UPDATE ON {table}
+    FOR EACH ROW EXECUTE FUNCTION ensure_timestamps();
+
+-- Comments
+COMMENT ON TABLE {table} IS '{entity} table — {cfg["compliance"]} compliant — Generated by Agents of Agents';
+"""
+
+
+def generate_junit_test(cfg):
+    entity = cfg["entity"]
+    pkg = cfg["package"]
+    compliance_safe = cfg["compliance"].replace(" ","_").replace("-","_")
+    return f"""package {pkg}.service;
+
+import {pkg}.entity.{entity};
+import {pkg}.repository.{entity}Repository;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+@DisplayName("{entity} Service Tests - {cfg["compliance"]}")
+class {entity}ServiceTest {{
+    @Mock private {entity}Repository repository;
+    @InjectMocks private {entity}Service service;
+    private {entity} sample; private UUID id;
+
+    @BeforeEach void setUp() {{ id = UUID.randomUUID(); sample = new {entity}(); }}
+
+    @Test @DisplayName("findAll returns all records")
+    void findAll_returnsAll() {{
+        when(repository.findAll()).thenReturn(List.of(sample));
+        assertEquals(1, service.findAll().size());
+        verify(repository).findAll();
+    }}
+
+    @Test @DisplayName("findById with valid id returns entity")
+    void findById_valid() {{
+        when(repository.findById(id)).thenReturn(Optional.of(sample));
+        assertTrue(service.findById(id).isPresent());
+    }}
+
+    @Test @DisplayName("findById with invalid id returns empty")
+    void findById_invalid() {{
+        when(repository.findById(id)).thenReturn(Optional.empty());
+        assertFalse(service.findById(id).isPresent());
+    }}
+
+    @Test @DisplayName("create saves and returns entity")
+    void create_valid() {{
+        when(repository.save(any())).thenReturn(sample);
+        assertNotNull(service.create(sample));
+        verify(repository).save(any());
+    }}
+
+    @Test @DisplayName("create null throws exception")
+    void create_null_throws() {{
+        assertThrows(IllegalArgumentException.class, () -> service.create(null));
+        verify(repository, never()).save(any());
+    }}
+
+    @Test @DisplayName("delete removes entity by id")
+    void delete_valid() {{
+        doNothing().when(repository).deleteById(id);
+        assertDoesNotThrow(() -> service.delete(id));
+        verify(repository).deleteById(id);
+    }}
+
+    @Test @DisplayName("{cfg["compliance"]} - saved entity must not be null")
+    void compliance_entityNotNull() {{
+        when(repository.save(any())).thenReturn(sample);
+        assertNotNull(service.create(sample));
+    }}
+}}"""
+
+
+async def self_heal(code, pack, entity, compliance):
+    """Check generated code quality. If bad, ask Groq to fix it."""
+    issues = []
+    if "@Entity" not in code: issues.append("missing @Entity annotation")
+    if "@Id" not in code: issues.append("missing @Id annotation")
+    if "@GeneratedValue" not in code: issues.append("missing @GeneratedValue")
+    if "UUID" not in code: issues.append("missing UUID primary key")
+    if len(code) < 500: issues.append("code too short — incomplete generation")
+
+    if not issues:
+        logger.info(f"QA passed for {entity} — no issues found")
+        return code, []
+
+    logger.warning(f"Self-healing triggered for {entity}: {issues}")
+    fix_prompt = f"""The following Java Spring Boot @Entity class has issues: {", ".join(issues)}.
+Fix ALL issues and return complete, valid Java code only.
+Requirements: @Entity, @Table, @Id, @GeneratedValue(UUID), all @Column annotations.
+Compliance: {compliance}. Entity name: {entity}. Pack: {pack}.
+
+Original code:
+{code[:12000]}
+
+Return only the complete fixed Java code."""
+
+    fixed = await call_groq(fix_prompt)
+    logger.info(f"Self-healed {entity}: {len(fixed)} chars")
+    return fixed, issues
+
+
+
+def generate_dockerfile(cfg):
+    entity = cfg["entity"]
+    pkg = cfg["package"]
+    return f"""FROM eclipse-temurin:21-jdk-alpine AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN apk add --no-cache maven && mvn clean package -DskipTests
+
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE 8080
+ENV JAVA_OPTS="-Xmx512m -Xms256m"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+# Generated by Agents of Agents | {cfg["compliance"]} compliant"""
+
+def generate_docker_compose(cfg, pack):
+    entity = cfg["entity"]
+    svc = entity.lower()
+    return f"""version: "3.9"
+# Generated by Agents of Agents AI Platform
+# Compliance: {cfg["compliance"]}
+# One-command deploy: docker compose up -d
+
+services:
+  {svc}-app:
+    build: .
+    ports:
+      - "127.0.0.1:${{APP_PORT:-8090}}:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/{pack}db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: ${{POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}}
+      SPRING_PROFILES_ACTIVE: prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: {pack}db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 5
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    ports:
+      - "127.0.0.1:5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@agents-of-agents.com
+      PGADMIN_DEFAULT_PASSWORD: ${{PGADMIN_PASSWORD:?set PGADMIN_PASSWORD in .env}}
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
+"""
+
+
+VALID_PACKS = ("banking", "ecommerce", "logistics", "custom")
+
+def resolve_pack(spec_data):
+    """Explicit vertical wins; else legacy keyword match on app_name; else fail loudly."""
+    v = (spec_data.get("vertical") or "").strip().lower()
+    if v in VALID_PACKS:
+        return v
+    name = (spec_data.get("app_name") or "").lower()
+    description = spec_data.get("description") or ""
+    if not name:
+        raise ValueError("cannot determine pack: send 'vertical' or 'app_name'")
+    if any(x in name for x in ["store", "commerce", "omni", "shop"]):
+        return "ecommerce"
+    if any(x in name for x in ["logi", "fleet", "route", "dispatch"]):
+        return "logistics"
+    if len(description) > 20 and not any(x in name for x in ["bank", "vibe"]):
+        return "custom"
+    return "banking"
+
+
+async def run_generation(ctx, job_id, tenant_id, spec_data):
+    redis = ctx["redis"]
+    channel = f"job:{job_id}"
+    name = (spec_data.get("app_name") or "").lower()
+    description = spec_data.get("description") or ""
+
+    pack = resolve_pack(spec_data)
+
+    cfg = PACK_CONFIG[pack]
+    entity = cfg["entity"]
+
+    async def pub(progress, stage, message):
+        event = json.dumps({
+            "progress": progress, "stage": stage, "message": message,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "tables": cfg["tables"], "compliance": cfg["compliance"], "pack": pack
+        })
+        await redis.publish(channel, event)
+        await db_add_event(tenant_id, job_id, "error" if stage == "failed" else stage, json.loads(event))
+        logger.info(f"[{job_id}] {progress}% {stage}: {message}")
+
+    await db_mark_running(tenant_id, job_id)
+    await pub(10, "planner", f"Analyzing {pack} domain — {cfg['entities']} entities, {cfg['compliance']} compliance")
+    await asyncio.sleep(0.5)
+
+    await pub(25, "spec_ir", f"Compiling Spec IR — {cfg['entities']} entities, generating {cfg['tables']} table schema")
+    await asyncio.sleep(0.5)
+
+    # REAL LLM CALL — Generate Entity class
+    PACK_PROMPTS = {
+        "banking": f"Generate a Java Spring Boot JPA @Entity class named BankAccount for RBI Tier-1 banking. Package: com.vibebank.entity. Include 24 fields: id (UUID), account_number, iban, swift_bic, holder_full_name, holder_email, holder_phone, account_type, currency, balance (BigDecimal), available_balance (BigDecimal), status, aml_flag (Boolean), rbi_audit_id, branch_code, ifsc_code, nominee_name, kyc_status, credit_limit (BigDecimal), interest_rate (BigDecimal), tenant_id (UUID), created_at (LocalDateTime), updated_at (LocalDateTime). Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
+        "ecommerce": f"Generate a Java Spring Boot JPA @Entity class named Product for GDPR e-commerce. Package: com.omnistore.entity. Include 28 fields: id (UUID), sku, name, description, price (BigDecimal), stock_quantity (Integer), category, brand, gst_hsn_code, gdpr_consent_required (Boolean), seller_id (UUID), weight (BigDecimal), dimensions, image_url, rating (BigDecimal), review_count (Integer), discount_percent (BigDecimal), tax_rate (BigDecimal), status, tenant_id (UUID), created_at, updated_at. Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
+        "logistics": f"Generate a Java Spring Boot JPA @Entity class named FleetVehicle for ISO 27001 logistics. Package: com.logiroute.entity. Include 18 fields: id (UUID), vehicle_id, plate_number, driver_name, gps_lat (Double), gps_lng (Double), route_id (UUID), cargo_weight (BigDecimal), status, iso_audit_id, last_checkpoint, fuel_level (BigDecimal), speed_kmh (BigDecimal), engine_status, waybill_number, tenant_id (UUID), created_at, updated_at. Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
+        "custom": f"Generate a Java Spring Boot JPA @Entity class for this requirement: {description}. Create appropriate entity with relevant fields. Package: com.customapp.entity. Use @Entity @Table @Id @GeneratedValue(UUID) @Column annotations. Return only Java code.",
+    }
+
+    MAX_RETRIES = 3
+    heal_issues = []
+    entity_code = ""
+    generation_status = "ok"
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"Generation attempt {attempt}/{MAX_RETRIES} for {entity}")
+            entity_code = strip_fences(await call_groq(PACK_PROMPTS.get(pack, PACK_PROMPTS["banking"])))
+            logger.info(f"LLM generated entity: {len(entity_code)} chars")
+            entity_code, heal_issues = await self_heal(entity_code, pack, entity, cfg["compliance"])
+            if not heal_issues:
+                logger.info(f"Attempt {attempt} succeeded!")
+                generation_status = "ok"
+                break
+            else:
+                logger.warning(f"Attempt {attempt} failed: {heal_issues}. Retrying...")
+                await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Attempt {attempt} error: {e}")
+            entity_code = f"// Error attempt {attempt}: {e}"
+            await asyncio.sleep(2)
+    else:
+        generation_status = "needs_human_review"
+        logger.error(f"ALL 3 ATTEMPTS FAILED for {entity} — needs human review!")
+        await pub(85, "human_review", f"HUMAN REVIEW NEEDED — AI failed 3 attempts for {entity}. Issues: {str(heal_issues)}")
+        entity_code = "// HUMAN REVIEW REQUIRED - AI failed 3 attempts. Please write " + entity + " entity manually."
+
+    entity_code = postprocess_entity(entity_code, cfg)
+    await pub(40, "architect", f"Generating {cfg['framework']} project structure — 7 files")
+    await asyncio.sleep(0.5)
+
+    # Generate all files
+    pom = generate_pom_xml(cfg)
+    app_yml = generate_application_yml(cfg, pack)
+    repo = generate_repository(cfg)
+    service = generate_service(cfg)
+    controller = generate_controller(cfg)
+    sql = generate_flyway_sql(cfg, pack)
+    if pack != "banking":
+        from tasks.postprocess import sql_from_entity
+        _gen_sql = sql_from_entity(entity_code, cfg)
+        if _gen_sql:
+            sql = _gen_sql
+    erd = ERD_TEMPLATES.get(pack, "erDiagram\n    ENTITY { uuid id string name }")
+    backtick3 = chr(96) * 3
+    erd_md = f"# {pack.title()} ERD\n\n{backtick3}mermaid\n{erd}\n{backtick3}"
+
+    # Save all files to disk
+    out_dir = f"/app/generated/{job_id}"
+    os.makedirs(f"{out_dir}/src/main/java/{cfg['package'].replace('.','/')}/entity", exist_ok=True)
+    os.makedirs(f"{out_dir}/src/main/java/{cfg['package'].replace('.','/')}/repository", exist_ok=True)
+    os.makedirs(f"{out_dir}/src/main/java/{cfg['package'].replace('.','/')}/service", exist_ok=True)
+    os.makedirs(f"{out_dir}/src/main/java/{cfg['package'].replace('.','/')}/controller", exist_ok=True)
+    os.makedirs(f"{out_dir}/src/main/resources/db/migration", exist_ok=True)
+
+    test_code = generate_junit_test(cfg)
+    test_path = f"src/test/java/{cfg['package'].replace('.','/')}/{entity}ServiceTest.java"
+
+    disclaimer = '\n\n> **Disclaimer:** This is a code template following RBI Tier-1 field guidelines. Final compliance validation required by your organization legal and compliance team. Agents of Agents is not a licensed financial institution.'
+    files = {
+        "pom.xml": pom,
+        f"src/main/java/{cfg['package'].replace('.','/')}/entity/{entity}.java": entity_code,
+        f"src/main/java/{cfg['package'].replace('.','/')}/repository/{entity}Repository.java": repo,
+        f"src/main/java/{cfg['package'].replace('.','/')}/service/{entity}Service.java": service,
+        f"src/main/java/{cfg['package'].replace('.','/')}/controller/{entity}Controller.java": controller,
+        "src/main/resources/application.yml": app_yml,
+        "src/main/resources/db/migration/V1__create_tables.sql": sql,
+        "ERD.md": erd_md + disclaimer,
+        test_path: test_code,
+        f"src/main/java/{cfg['package'].replace('.','/')}/{entity}ServiceApplication.java": generate_application_class(cfg),
+        "Dockerfile": generate_dockerfile(cfg),
+        "docker-compose.yml": generate_docker_compose(cfg, pack),
+    }
+
+    for path, content in files.items():
+        full_path = f"{out_dir}/{path}"
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w") as f:
+            f.write(content)
+
+    logger.info(f"Saved {len(files)} files to {out_dir}")
+
+    await pub(60, "synthesizer", f"Generated {len(files)} files — Entity, Repository, Service, Controller, SQL, pom.xml")
+    await asyncio.sleep(0.5)
+
+    heal_msg = f" Self-healed {len(heal_issues)} issues." if heal_issues else " No issues found."
+    await pub(80, "qa_gate", f"Static checks only (entity annotations, no compile or security scan yet).{heal_msg}")
+    await asyncio.sleep(0.5)
+
+    # Push ALL files to Gitea
+    repo_name = f"agents-{pack}-{job_id[:8]}"
+    pushed = 0
+    async with httpx.AsyncClient(timeout=30) as client:
+        await client.post(f"{GITEA_URL}/api/v1/user/repos",
+            headers={"Authorization": f"token {GITEA_TOKEN}"},
+            json={"name": repo_name, "description": f"{cfg['compliance']} {pack} app — Agents of Agents AI", "auto_init": True})
+        await asyncio.sleep(2)
+
+    for file_path, content in files.items():
+        if await push_file_to_gitea(repo_name, file_path, content):
+            pushed += 1
+            await asyncio.sleep(0.3)
+
+    gitea_url = f"http://144.24.149.226:3002/vibeforge-admin/{repo_name}"
+    logger.info(f"Pushed {pushed}/{len(files)} files to {gitea_url}")
+
+    if pushed < len(files):
+        await db_mark_done(tenant_id, job_id, "failed", gitea_url, {"error": "incomplete push", "pushed": pushed, "expected": len(files)})
+        await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea. Repo may be incomplete: {gitea_url}")
+        return {"status": "failed", "pack": pack, "files": pushed, "expected": len(files), "gitea_url": gitea_url}
+    await db_mark_done(tenant_id, job_id, "completed", gitea_url)
+    await pub(100, "complete", f"Done — {pushed} files pushed. {cfg['compliance']}-aligned template, not a compliance certification. Repo: {gitea_url}")
+    return {"status": "completed", "pack": pack, "tables": cfg["tables"], "files": pushed, "gitea_url": gitea_url}

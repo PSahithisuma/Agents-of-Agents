@@ -1,0 +1,11 @@
+*.bak
+*.bak[0-9]*
+*.key
+*.log
+*.pem
+*.pyc
+.env
+__pycache__/
+docker-compose.yml
+generated/
+node_modules/

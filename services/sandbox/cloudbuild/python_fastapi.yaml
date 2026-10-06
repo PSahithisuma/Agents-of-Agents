@@ -1,0 +1,166 @@
+# VibeForge QA Gate — Python FastAPI Stack
+# Runs: extract → lint → test(≥60%) → semgrep → trivy → gitleaks → report
+substitutions:
+  _JOB_ID:    "unknown"
+  _TENANT_ID: "unknown"
+  _BUCKET:    "vibeforge-artifacts-dev"
+  _STACK:     "python_fastapi"
+
+steps:
+  # 1. Extract generated source from GCS
+  - name: gcr.io/cloud-builders/gsutil
+    id: extract-source
+    args:
+      - cp
+      - gs://${_BUCKET}/artifacts/${_JOB_ID}/source.tar.gz
+      - /workspace/source.tar.gz
+
+  - name: ubuntu
+    id: unpack-source
+    waitFor: [extract-source]
+    args: [tar, -xzf, /workspace/source.tar.gz, -C, /workspace/src]
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 2. Lint with ruff
+  - name: python:3.12-slim
+    id: lint
+    waitFor: [unpack-source]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install -q ruff
+        cd /workspace/src
+        ruff check . --output-format=json > /workspace/lint.json || true
+        ruff check . --statistics
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 3. Install deps and run pytest with coverage
+  - name: python:3.12-slim
+    id: test-coverage
+    waitFor: [unpack-source]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        cd /workspace/src
+        pip install -q -r requirements.txt pytest pytest-cov pytest-asyncio httpx 2>/dev/null || true
+        pytest --cov=. --cov-report=json:/workspace/coverage.json --cov-fail-under=60 -q 2>&1 | tee /workspace/test.log
+        echo $? > /workspace/test_exit.txt
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 4. Semgrep SAST scan
+  - name: returntocorp/semgrep
+    id: semgrep
+    waitFor: [unpack-source]
+    entrypoint: semgrep
+    args:
+      - --config=auto
+      - --json
+      - --output=/workspace/semgrep.json
+      - /workspace/src
+      - --no-rewrite-rule-ids
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 5. Trivy vulnerability scan (filesystem mode)
+  - name: aquasec/trivy:latest
+    id: trivy
+    waitFor: [unpack-source]
+    args:
+      - fs
+      - --format=json
+      - --output=/workspace/trivy.json
+      - --severity=HIGH,CRITICAL
+      - /workspace/src
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 6. gitleaks secret scan
+  - name: zricethezav/gitleaks:latest
+    id: gitleaks
+    waitFor: [unpack-source]
+    args:
+      - detect
+      - --source=/workspace/src
+      - --report-format=json
+      - --report-path=/workspace/gitleaks.json
+      - --exit-code=0
+    volumes:
+      - name: src
+        path: /workspace/src
+
+  # 7. Generate GateReport and upload to GCS
+  - name: python:3.12-slim
+    id: gate-report
+    waitFor: [lint, test-coverage, semgrep, trivy, gitleaks]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install -q google-cloud-storage
+        python3 - <<'PYEOF'
+        import json, os, datetime
+        from google.cloud import storage
+
+        def load_json(path):
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+
+        coverage  = load_json("/workspace/coverage.json")
+        semgrep   = load_json("/workspace/semgrep.json")
+        trivy_r   = load_json("/workspace/trivy.json")
+        gitleaks  = load_json("/workspace/gitleaks.json")
+        test_exit = int(open("/workspace/test_exit.txt").read().strip() or "0")
+
+        cov_pct = 0.0
+        try:
+            cov_pct = float(coverage.get("totals", {}).get("percent_covered", 0))
+        except Exception:
+            pass
+
+        semgrep_high  = [f for f in semgrep.get("results", []) if f.get("extra", {}).get("severity", "") in ("ERROR", "WARNING")]
+        trivy_vulns   = trivy_r.get("Results", [{}])[0].get("Vulnerabilities", []) if isinstance(trivy_r.get("Results"), list) else []
+        trivy_critical= [v for v in trivy_vulns if v.get("Severity") in ("CRITICAL", "HIGH")]
+        secrets_found = gitleaks if isinstance(gitleaks, list) else []
+
+        steps = [
+            {"name": "lint",        "passed": True,                              "detail": {}},
+            {"name": "test",        "passed": test_exit == 0 and cov_pct >= 60,  "detail": {"coverage_pct": cov_pct}},
+            {"name": "semgrep",     "passed": len(semgrep_high) == 0,            "detail": {"findings": len(semgrep_high)}},
+            {"name": "trivy",       "passed": len(trivy_critical) == 0,          "detail": {"critical_vulns": len(trivy_critical)}},
+            {"name": "gitleaks",    "passed": len(secrets_found) == 0,           "detail": {"secrets_found": len(secrets_found)}},
+        ]
+        overall = "pass" if all(s["passed"] for s in steps) else "fail"
+
+        report = {
+            "job_id":       os.environ["_JOB_ID"],
+            "tenant_id":    os.environ["_TENANT_ID"],
+            "stack":        "python_fastapi",
+            "overall":      overall,
+            "steps":        steps,
+            "coverage_pct": cov_pct,
+            "created_at":   datetime.datetime.utcnow().isoformat() + "Z",
+        }
+
+        client = storage.Client()
+        bucket = client.bucket(os.environ["_BUCKET"])
+        blob = bucket.blob(f"gate-runs/{os.environ['_JOB_ID']}/gate_report.json")
+        blob.upload_from_string(json.dumps(report, indent=2), content_type="application/json")
+        print(f"GateReport uploaded: overall={overall}, coverage={cov_pct:.1f}%")
+        PYEOF
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 900s

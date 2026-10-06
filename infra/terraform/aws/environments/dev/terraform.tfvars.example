@@ -1,0 +1,17 @@
+# =============================================================================
+# terraform.tfvars — fill in your values then run terraform apply
+# DO NOT commit this file to Git (it is in .gitignore)
+# =============================================================================
+
+aws_region  = "us-east-1"   # Virginia — Claude 3 Haiku available here directly
+
+db_password = "VibeForge_Dev_Secret_2026!"   # change this
+
+# Get from cloud.qdrant.io → free cluster → copy URL + key
+qdrant_url     = "https://YOUR-CLUSTER.us-east-0.aws.cloud.qdrant.io:6333"
+qdrant_api_key = "YOUR-QDRANT-API-KEY"
+
+litellm_master_key = "sk-vibeforge-litellm-dev-2026"   # make up any string
+
+# Get from console.anthropic.com → API Keys → Create key
+anthropic_api_key  = "sk-ant-YOUR-KEY-HERE"

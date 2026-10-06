@@ -1,0 +1,33 @@
+{
+  "title": "VibeForge — LLM Spend & Usage",
+  "uid": "vf-llm-spend",
+  "panels": [
+    {"type":"stat","title":"Total Jobs Today","gridPos":{"h":4,"w":6,"x":0,"y":0},
+     "targets":[{"expr":"sum(increase(vibeforge_generation_jobs_total[24h]))","legendFormat":"Jobs"}]},
+    {"type":"stat","title":"Gate Pass Rate","gridPos":{"h":4,"w":6,"x":6,"y":0},
+     "targets":[{"expr":"sum(rate(vibeforge_gate_pass_total[1h])) / (sum(rate(vibeforge_gate_pass_total[1h])) + sum(rate(vibeforge_gate_fail_total[1h]))) * 100","legendFormat":"Pass %"}]},
+    {"type":"stat","title":"Avg Latency (last 1h)","gridPos":{"h":4,"w":6,"x":12,"y":0},
+     "targets":[{"expr":"histogram_quantile(0.95, rate(vibeforge_generation_duration_seconds_bucket[1h]))","legendFormat":"p95 latency"}]},
+    {"type":"stat","title":"Retrieval Cache Hit Rate","gridPos":{"h":4,"w":6,"x":18,"y":0},
+     "targets":[{"expr":"sum(rate(vibeforge_retrieval_cache_hits_total[1h])) / sum(rate(vibeforge_retrieval_requests_total[1h])) * 100","legendFormat":"Cache Hit %"}]},
+    {"type":"timeseries","title":"LLM Request Rate (per model)","gridPos":{"h":8,"w":12,"x":0,"y":4},
+     "targets":[{"expr":"sum by (model) (rate(vibeforge_llm_requests_total[5m]))","legendFormat":"{{model}}"}]},
+    {"type":"timeseries","title":"Generation Latency (p50/p95/p99)","gridPos":{"h":8,"w":12,"x":12,"y":4},
+     "targets":[
+       {"expr":"histogram_quantile(0.50, rate(vibeforge_generation_duration_seconds_bucket[5m]))","legendFormat":"p50"},
+       {"expr":"histogram_quantile(0.95, rate(vibeforge_generation_duration_seconds_bucket[5m]))","legendFormat":"p95"},
+       {"expr":"histogram_quantile(0.99, rate(vibeforge_generation_duration_seconds_bucket[5m]))","legendFormat":"p99"}
+     ]},
+    {"type":"timeseries","title":"Gate Pass/Fail Rate","gridPos":{"h":8,"w":12,"x":0,"y":12},
+     "targets":[
+       {"expr":"rate(vibeforge_gate_pass_total[5m])","legendFormat":"Pass"},
+       {"expr":"rate(vibeforge_gate_fail_total[5m])","legendFormat":"Fail"}
+     ]},
+    {"type":"timeseries","title":"Retrieval Latency","gridPos":{"h":8,"w":12,"x":12,"y":12},
+     "targets":[{"expr":"histogram_quantile(0.95, rate(vibeforge_retrieval_latency_seconds_bucket[5m]))","legendFormat":"p95"}]}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "time": {"from": "now-6h","to": "now"},
+  "timepicker": {}
+}

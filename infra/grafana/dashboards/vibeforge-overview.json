@@ -1,0 +1,186 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "table", "name": "Table", "version": ""}
+  ],
+  "annotations": {"list": []},
+  "description": "VibeForge Platform Overview — job pipeline, gate pass rates, model spend, worker utilisation",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Jobs — Total (24h)",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}},
+      "targets": [
+        {
+          "expr": "increase(vibeforge_jobs_total[24h])",
+          "legendFormat": "Jobs",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Gate Pass Rate",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "yellow", "value": 0.7},
+            {"color": "green", "value": 0.9}
+          ]}
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(vibeforge_gate_pass_total[1h]) / (rate(vibeforge_gate_pass_total[1h]) + rate(vibeforge_gate_fail_total[1h]))",
+          "legendFormat": "Pass Rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active Jobs",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}}},
+      "targets": [
+        {
+          "expr": "vibeforge_jobs_active",
+          "legendFormat": "Active",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Escalations (24h)",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 10}]}}},
+      "targets": [
+        {
+          "expr": "increase(vibeforge_escalations_total[24h])",
+          "legendFormat": "Escalations",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Cache Hit Rate",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.3}, {"color": "green", "value": 0.6}]}}},
+      "targets": [
+        {
+          "expr": "rate(vibeforge_cache_hits_total[1h]) / (rate(vibeforge_cache_hits_total[1h]) + rate(vibeforge_cache_misses_total[1h]))",
+          "legendFormat": "Cache Hit Rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "LLM Spend (USD, 24h)",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "datasource": "Prometheus",
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 50}]}}},
+      "targets": [
+        {
+          "expr": "increase(vibeforge_llm_cost_usd_total[24h])",
+          "legendFormat": "Spend",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Job Throughput",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "datasource": "Prometheus",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10}}},
+      "targets": [
+        {"expr": "rate(vibeforge_jobs_total{status='completed'}[5m])", "legendFormat": "Completed/s", "refId": "A"},
+        {"expr": "rate(vibeforge_jobs_total{status='failed'}[5m])", "legendFormat": "Failed/s", "refId": "B"}
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "API Latency (p50 / p95 / p99)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "datasource": "Prometheus",
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job='vibeforge-api'}[5m]))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job='vibeforge-api'}[5m]))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job='vibeforge-api'}[5m]))", "legendFormat": "p99", "refId": "C"}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Fix Iteration Distribution",
+      "description": "How many fix iterations jobs are consuming. High iteration counts indicate systematic synthesis issues.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "vibeforge_fix_iterations_bucket", "legendFormat": "Iterations", "refId": "A"}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Metacognition Gate — Decision Outcomes",
+      "description": "NEEDED vs NOT_NEEDED decisions by gate tier. High NOT_NEEDED rate = cost savings.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "datasource": "Prometheus",
+      "targets": [
+        {"expr": "rate(vibeforge_gate_decisions_total{outcome='NEEDED'}[5m])", "legendFormat": "NEEDED", "refId": "A"},
+        {"expr": "rate(vibeforge_gate_decisions_total{outcome='NOT_NEEDED'}[5m])", "legendFormat": "NOT_NEEDED", "refId": "B"},
+        {"expr": "rate(vibeforge_gate_decisions_total{outcome='NARROW_QUERY'}[5m])", "legendFormat": "NARROW_QUERY", "refId": "C"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["vibeforge", "platform", "overview"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "VibeForge — Platform Overview",
+  "uid": "vibeforge-overview",
+  "version": 1
+}

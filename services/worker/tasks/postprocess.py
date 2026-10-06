@@ -1,0 +1,188 @@
+import re
+
+def strip_fences(text):
+    t = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    m = re.search(r"```[A-Za-z]*\s*\n(.*?)```", t, flags=re.S)
+    if m:
+        t = m.group(1).strip()
+    elif t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+        t = t.replace("```", "").strip()
+    return t + "\n"
+
+def table_name(entity):
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", entity).lower() + "s"
+
+def _base_postprocess(code, cfg):
+    table = table_name(cfg["entity"])
+    code = re.sub(r'(@Table\s*\(\s*name\s*=\s*")[^"]*(")',
+                  lambda m: m.group(1) + table + m.group(2), code, count=1)
+    if "PrePersist" not in code:
+        m = re.search(r"private\s+(?:java\.time\.)?LocalDateTime\s+createdAt\s*;", code)
+        if m:
+            has_upd = re.search(r"private\s+(?:java\.time\.)?LocalDateTime\s+updatedAt\s*;", code) is not None
+            hook = "\n\n    @jakarta.persistence.PrePersist\n    protected void onCreate() {\n        java.time.LocalDateTime now = java.time.LocalDateTime.now();\n        if (this.createdAt == null) this.createdAt = now;\n"
+            if has_upd:
+                hook += "        if (this.updatedAt == null) this.updatedAt = now;\n"
+            hook += "    }\n"
+            if has_upd:
+                hook += "\n    @jakarta.persistence.PreUpdate\n    protected void onUpdate() {\n        this.updatedAt = java.time.LocalDateTime.now();\n    }\n"
+            code = code[:m.end()] + hook + code[m.end():]
+    return code
+
+def generate_application_class(cfg):
+    cls = cfg["entity"] + "ServiceApplication"
+    return (
+        "package " + cfg["package"] + ";\n\n"
+        "import org.springframework.boot.SpringApplication;\n"
+        "import org.springframework.boot.autoconfigure.SpringBootApplication;\n\n"
+        "@SpringBootApplication\n"
+        "public class " + cls + " {\n"
+        "    public static void main(String[] args) {\n"
+        "        SpringApplication.run(" + cls + ".class, args);\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def _camel(name):
+    parts = name.split("_")
+    return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+def camelize_entity(code):
+    import re as _re
+    fields = _re.findall(r"private\s+[\w<>.,\s]+?\s+([a-z][A-Za-z0-9]*_[A-Za-z0-9_]*)\s*;", code)
+    for f in dict.fromkeys(fields):
+        c = _camel(f)
+        F, C = f[:1].upper() + f[1:], c[:1].upper() + c[1:]
+        code = _re.sub(r"\b" + _re.escape(f) + r"\b", c, code)
+        code = _re.sub(r"\b(get|set|is)" + _re.escape(F) + r"\b", lambda m: m.group(1) + C, code)
+    return code
+
+
+def snakeize_column_names(code):
+    import re as _re
+    def fix(m):
+        name = _re.sub(r"(?<!^)(?=[A-Z])", "_", m.group(2)).lower()
+        return m.group(1) + name + m.group(3)
+    return _re.sub(r'(@Column\s*\(\s*name\s*=\s*")([^"]+)(")', fix, code)
+
+
+def fix_jakarta(code):
+    return (code.replace("javax.persistence", "jakarta.persistence")
+                .replace("javax.validation", "jakarta.validation"))
+
+
+_SQL_TYPES = {
+    "UUID": "UUID", "String": "VARCHAR(255)", "Integer": "INTEGER", "int": "INTEGER",
+    "Long": "BIGINT", "long": "BIGINT", "BigDecimal": "NUMERIC(19,4)", "Boolean": "BOOLEAN",
+    "boolean": "BOOLEAN", "Double": "DOUBLE PRECISION", "double": "DOUBLE PRECISION",
+    "LocalDateTime": "TIMESTAMP", "LocalDate": "DATE", "Instant": "TIMESTAMP",
+}
+
+def sql_from_entity(code, cfg):
+    import re as _re
+    table = table_name(cfg["entity"])
+    cols = []
+    pat = r'(?:@Column\s*\(([^)]*)\)\s*)?private\s+([A-Za-z][A-Za-z0-9_.]*)\s+([a-z][A-Za-z0-9]*)\s*(?:=[^;]*)?;'
+    for m in _re.finditer(pat, code):
+        attrs, jtype, fname = m.group(1) or "", m.group(2), m.group(3)
+        jtype = jtype.split(".")[-1]
+        nm = _re.search(r'name\s*=\s*"([^"]+)"', attrs)
+        col = nm.group(1) if nm else _re.sub(r"(?<!^)(?=[A-Z])", "_", fname).lower()
+        sqltype = _SQL_TYPES.get(jtype)
+        if sqltype is None:
+            continue
+        ln = _re.search(r'length\s*=\s*(\d+)', attrs)
+        if sqltype == "VARCHAR(255)" and ln:
+            sqltype = "VARCHAR(%s)" % ln.group(1)
+        line = "    %s %s" % (col, sqltype)
+        if col == "id":
+            line += " PRIMARY KEY DEFAULT gen_random_uuid()"
+        else:
+            if "nullable = false" in attrs and col not in ("tenant_id", "created_at", "updated_at"):
+                line += " NOT NULL"
+                if sqltype in ("INTEGER", "BIGINT", "NUMERIC(19,4)", "DOUBLE PRECISION"):
+                    line += " DEFAULT 0"
+            if "unique = true" in attrs:
+                line += " UNIQUE"
+        cols.append(line)
+    _nfields = len(_re.findall(r"private\s+[A-Za-z][A-Za-z0-9_.]*\s+[a-z][A-Za-z0-9]*\s*(?:=[^;]*)?;", code))
+    if len(cols) != _nfields:
+        return None
+    if not any(c.strip().startswith("id ") for c in cols) or len(cols) < 3:
+        return None
+    return "CREATE TABLE IF NOT EXISTS %s (\n%s\n);\n" % (table, ",\n".join(cols))
+
+def init_required_defaults(code):
+    import re as _re
+    pat = r'(@Column\s*\([^)]*nullable\s*=\s*false[^)]*\)[^;{}]*?private\s+)(Boolean|Integer|Long|BigDecimal)(\s+[a-z][A-Za-z0-9]*)\s*;'
+    init = {"Boolean": "Boolean.FALSE", "Integer": "0", "Long": "0L", "BigDecimal": "java.math.BigDecimal.ZERO"}
+    return _re.sub(pat, lambda m: m.group(1) + m.group(2) + m.group(3) + " = " + init[m.group(2)] + ";", code)
+
+
+def add_not_null(code):
+    import re as _re
+    pat = r'(@Column\s*\([^)]*nullable\s*=\s*false[^)]*\)\s*)(private\s+(?:UUID|String)\s+(?!id\b)[a-z][A-Za-z0-9]*\s*;)'
+    return _re.sub(pat, lambda m: m.group(1) + '@jakarta.validation.constraints.NotNull ' + m.group(2), code)
+
+
+def fix_class_name(code, cfg):
+    import re as _re
+    want = cfg["entity"]
+    m = _re.search(r"public\s+class\s+([A-Za-z0-9_]+)", code)
+    if not m or m.group(1) == want:
+        return code
+    have = m.group(1)
+    return _re.sub(r"\b" + _re.escape(have) + r"\b", want, code)
+
+
+
+
+def repair_truncated(code):
+    """If the LLM output was cut off mid-class, drop the partial member and close the class."""
+    if code.count("{") == code.count("}"):
+        return code
+    lines = code.rstrip().split("\n")
+    while lines and lines[-1] != "    }":
+        lines.pop()
+    return ("\n".join(lines) + "\n}\n") if lines else code
+
+def add_missing_accessors(code):
+    import re as _re
+    body = code.rstrip()
+    if not body.endswith("}"):
+        return code
+    add = ""
+    for line in body.split("\n"):
+        if not line.startswith("    ") or line.startswith("     ") and "private" not in line:
+            continue
+        if "static" in line or "final" in line:
+            continue
+        m = _re.search(r"private\s+([\w.<>\[\], ]+?)\s+([a-z]\w*)\s*(?:=[^;]*)?;", line)
+        if not m:
+            continue
+        typ, name = m.group(1), m.group(2)
+        N = name[0].upper() + name[1:]
+        if ("get%s(" % N) not in body and ("is%s(" % N) not in body:
+            add += "\n    public %s get%s() {\n        return %s;\n    }\n" % (typ, N, name)
+        if ("set%s(" % N) not in body:
+            add += "\n    public void set%s(%s %s) {\n        this.%s = %s;\n    }\n" % (N, typ, name, name, name)
+    return (body[:-1].rstrip() + "\n" + add + "}\n") if add else code
+
+def postprocess_entity(code, cfg):
+    code = repair_truncated(code)
+    code = fix_class_name(code, cfg)
+    code = camelize_entity(code)
+    code = _base_postprocess(code, cfg)
+    code = snakeize_column_names(code)
+    code = fix_jakarta(code)
+    code = init_required_defaults(code)
+    code = add_not_null(code)
+    # tenant default in the same hook the base step creates
+    if "tenantId" in code and "DEFAULT_TENANT" not in code:
+        code = code.replace(
+            "if (this.createdAt == null) this.createdAt = now;",
+            "if (this.createdAt == null) this.createdAt = now;\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT placeholder",
+            1)
+    return add_missing_accessors(code)

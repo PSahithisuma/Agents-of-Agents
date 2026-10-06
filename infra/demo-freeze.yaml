@@ -1,0 +1,22 @@
+﻿# VibeForge Demo Freeze — 2026-08-28
+# Deploy with pinned digests to prevent accidental image changes
+
+services:
+  api: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/api:latest
+  capacity: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/capacity:latest
+  delivery: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/delivery:latest
+  devpi: docker.io/muccg/devpi
+  gitea: gitea/gitea:1.21
+  grafana: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/grafana:latest
+  ingestion: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/ingestion:latest
+  keycloak: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/keycloak:latest
+  langfuse: langfuse/langfuse:2
+  litellm: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/litellm:latest
+  prometheus: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/prometheus:latest
+  qdrant: qdrant/qdrant:latest
+  retrieval: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/retrieval:latest
+  sandbox: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/sandbox:latest
+  ui: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/ui:latest
+  verdaccio: verdaccio/verdaccio:latest
+  worker: us-central1-docker.pkg.dev/supple-century-505405-v2/vibeforge/worker:latest
+

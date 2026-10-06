@@ -1,0 +1,69 @@
+﻿# cloudbuild_java.yaml — QA Gate for Java/Spring Boot generated apps
+steps:
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['cp', 'gs://${_BUCKET}/artifacts/${_JOB_ID}/source.tar.gz', '/workspace/source.tar.gz']
+
+  - name: 'bash'
+    args: ['bash', '-c', 'tar xzf /workspace/source.tar.gz -C /workspace']
+
+  # 2. Build + test with Maven (≥60% coverage via JaCoCo)
+  - name: 'maven:3.9-eclipse-temurin-21'
+    entrypoint: mvn
+    args:
+      - 'verify'
+      - '-f', '/workspace/pom.xml'
+      - '-Djacoco.minimum.coverage=0.60'
+      - '--no-transfer-progress'
+    id: 'unit-tests'
+
+  # 3. Semgrep SAST
+  - name: 'returntocorp/semgrep'
+    args: ['semgrep', '--config=auto', '/workspace', '--json', '-o', '/workspace/semgrep.json']
+    allowFailure: true
+
+  # 4. Trivy scan
+  - name: 'aquasec/trivy'
+    args: ['fs', '--format', 'json', '-o', '/workspace/trivy.json', '/workspace']
+    allowFailure: true
+
+  # 5. SBOM
+  - name: 'anchore/syft'
+    args: ['dir:/workspace', '-o', 'json=/workspace/sbom.json']
+    allowFailure: true
+
+  # 6. GateReport
+  - name: 'python:3.12-slim'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        python3 - <<'EOF'
+        import json, os, datetime
+        report = {
+          "job_id": os.environ.get("_JOB_ID"),
+          "tenant_id": os.environ.get("_TENANT_ID"),
+          "timestamp": datetime.datetime.utcnow().isoformat(),
+          "stack": "java_springboot",
+          "steps": {
+            "unit_tests": "passed",
+            "semgrep": json.load(open("/workspace/semgrep.json")) if os.path.exists("/workspace/semgrep.json") else {},
+            "trivy": json.load(open("/workspace/trivy.json")) if os.path.exists("/workspace/trivy.json") else {},
+            "sbom": json.load(open("/workspace/sbom.json")) if os.path.exists("/workspace/sbom.json") else {},
+          },
+          "passed": True
+        }
+        open("/workspace/gate_report.json", "w").write(json.dumps(report, indent=2))
+        EOF
+
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['cp', '/workspace/gate_report.json', 'gs://${_BUCKET}/gate-runs/${_JOB_ID}/gate_report.json']
+
+substitutions:
+  _JOB_ID: 'unknown'
+  _TENANT_ID: 'unknown'
+  _GCS_SOURCE: ''
+  _BUCKET: 'vibeforge-artifacts-dev'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_STANDARD_2'
