@@ -38,6 +38,7 @@ class EntityField(BaseModel):
 
 class Entity(BaseModel):
     name: str                           # PascalCase e.g. "User", "Order"
+    table: Optional[str] = None         # physical table name (pack-defined)
     fields: list[EntityField] = []
     soft_delete: bool = False
     timestamps: bool = True             # created_at / updated_at

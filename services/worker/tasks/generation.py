@@ -779,6 +779,33 @@ volumes:
 
 VALID_PACKS = ("banking", "ecommerce", "logistics", "custom")
 
+def _pack_entities(pack, spec_data):
+    """Entities from the frozen Spec IR when present; legacy ENTITY_LISTS otherwise."""
+    _rev = {"uuid": "UUID", "decimal": "BigDecimal", "int": "Integer", "bool": "Boolean"}
+    try:
+        ents = ((spec_data or {}).get("domain_model") or {}).get("entities") or []
+        out = []
+        for e in ents:
+            if not e.get("table"):
+                continue
+            parts = []
+            for f in e.get("fields") or []:
+                t = f.get("type", "string")
+                if t in _rev:
+                    parts.append(f'{f["name"]} ({_rev[t]})')
+                elif isinstance(t, str) and t.startswith("raw:"):
+                    parts.append(f'{f["name"]} ({t[4:]})')
+                else:
+                    parts.append(f["name"])
+            out.append((e["name"], e["table"], ", ".join(parts)))
+        if out:
+            logger.info("entities source=spec_ir count=%d", len(out))
+            return out
+    except Exception as exc:
+        logger.warning("spec entities unreadable (%s); using legacy list", exc)
+    return ENTITY_LISTS.get(pack, [])
+
+
 def resolve_pack(spec_data):
     """Explicit vertical wins; else legacy keyword match on app_name; else fail loudly."""
     v = (spec_data.get("vertical") or "").strip().lower()
@@ -819,10 +846,10 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         logger.info(f"[{job_id}] {progress}% {stage}: {message}")
 
     await db_mark_running(tenant_id, job_id)
-    await pub(10, "planner", f"Analyzing {pack} domain — {len(ENTITY_LISTS.get(pack, [])) + 1} entities, {cfg['compliance']} compliance")
+    await pub(10, "planner", f"Analyzing {pack} domain — {len(_pack_entities(pack, spec_data)) + 1} entities, {cfg['compliance']} compliance")
     await asyncio.sleep(0.5)
 
-    await pub(25, "spec_ir", f"Compiling Spec IR — {len(ENTITY_LISTS.get(pack, [])) + 1} entities")
+    await pub(25, "spec_ir", f"Compiling Spec IR — {len(_pack_entities(pack, spec_data)) + 1} entities")
     await asyncio.sleep(0.5)
 
     # REAL LLM CALL — Generate Entity class
@@ -912,7 +939,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     # --- MULTI-ENTITY: generate the remaining entities of the pack, one LLM call each ---
     gen_entities = [entity]
     skipped_entities = []
-    _extra = ENTITY_LISTS.get(pack, [])
+    _extra = _pack_entities(pack, spec_data)
     _pp = cfg["package"].replace(".", "/")
     _sql_key = "src/main/resources/db/migration/V1__create_tables.sql"
     _base_sql = files[_sql_key]

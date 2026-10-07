@@ -58,7 +58,7 @@ def compile_spec(selections: dict[str, str], app_name: str = "", description: st
         description=description,
         vertical=vertical,
 
-        domain_model=_build_domain_model(sel),
+        domain_model=_with_pack(_build_domain_model(sel), vertical),
         api_model=_build_api_model(sel),
         ui_model=_build_ui_model(sel),
         workflow=_build_workflow(sel),
@@ -257,3 +257,40 @@ def _build_acceptance(sel: dict) -> list[AcceptanceCriterion]:
         ))
 
     return criteria
+
+
+# =============================================================================
+# Domain packs as data (spec C12): entities come from packs.json, not from code
+# =============================================================================
+import json as _json
+import os as _os
+
+_TYPE_NAMES = ("uuid", "decimal", "int", "bool", "string")
+
+
+def _load_packs() -> dict:
+    p = _os.path.join(_os.path.dirname(__file__), "packs.json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return _json.load(fh)
+    except FileNotFoundError:
+        return {}
+
+
+def _with_pack(dm: DomainModel, vertical: str) -> DomainModel:
+    """Pack verticals get their entities from packs.json (deterministic, no LLM); others unchanged."""
+    pack = _load_packs().get(vertical)
+    if not pack:
+        return dm
+    ents = [
+        Entity(
+            name=e["name"],
+            table=e["table"],
+            fields=[EntityField(name=f["name"], type=f["type"]) for f in e["fields"]],
+        )
+        for e in pack["entities"]
+    ]
+    ext = dict(dm.extensions or {})
+    ext["pack"] = vertical
+    ext["base_entity"] = pack.get("base_entity")
+    return DomainModel(entities=ents, relationships=dm.relationships, extensions=ext)

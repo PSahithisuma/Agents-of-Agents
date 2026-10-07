@@ -1,0 +1,937 @@
+{
+ "logistics": {
+  "base_entity": "Shipment",
+  "entities": [
+   {
+    "name": "Shipper",
+    "table": "shippers",
+    "fields": [
+     {
+      "name": "company_name",
+      "type": "string"
+     },
+     {
+      "name": "gstin",
+      "type": "string"
+     },
+     {
+      "name": "contact_person",
+      "type": "string"
+     },
+     {
+      "name": "email",
+      "type": "string"
+     },
+     {
+      "name": "phone",
+      "type": "string"
+     },
+     {
+      "name": "credit_limit",
+      "type": "decimal"
+     },
+     {
+      "name": "outstanding_amount",
+      "type": "decimal"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "Carrier",
+    "table": "carriers",
+    "fields": [
+     {
+      "name": "carrier_name",
+      "type": "string"
+     },
+     {
+      "name": "gstin",
+      "type": "string"
+     },
+     {
+      "name": "contact_person",
+      "type": "string"
+     },
+     {
+      "name": "email",
+      "type": "string"
+     },
+     {
+      "name": "phone",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "TrackingEvent",
+    "table": "tracking_events",
+    "fields": [
+     {
+      "name": "shipment_id",
+      "type": "uuid"
+     },
+     {
+      "name": "event_type",
+      "type": "string"
+     },
+     {
+      "name": "location_name",
+      "type": "string"
+     },
+     {
+      "name": "city",
+      "type": "string"
+     },
+     {
+      "name": "latitude",
+      "type": "decimal"
+     },
+     {
+      "name": "longitude",
+      "type": "decimal"
+     },
+     {
+      "name": "recorded_by",
+      "type": "uuid"
+     },
+     {
+      "name": "event_at",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Vehicle",
+    "table": "vehicles",
+    "fields": [
+     {
+      "name": "registration_number",
+      "type": "string"
+     },
+     {
+      "name": "vehicle_type",
+      "type": "string"
+     },
+     {
+      "name": "carrier_id",
+      "type": "uuid"
+     },
+     {
+      "name": "driver_id",
+      "type": "uuid"
+     },
+     {
+      "name": "capacity_kg",
+      "type": "decimal"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "current_latitude",
+      "type": "decimal"
+     },
+     {
+      "name": "current_longitude",
+      "type": "decimal"
+     },
+     {
+      "name": "insurance_expiry",
+      "type": "string"
+     },
+     {
+      "name": "permit_expiry",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Driver",
+    "table": "drivers",
+    "fields": [
+     {
+      "name": "carrier_id",
+      "type": "uuid"
+     },
+     {
+      "name": "employee_code",
+      "type": "string"
+     },
+     {
+      "name": "first_name",
+      "type": "string"
+     },
+     {
+      "name": "last_name",
+      "type": "string"
+     },
+     {
+      "name": "phone",
+      "type": "string"
+     },
+     {
+      "name": "license_number",
+      "type": "string"
+     },
+     {
+      "name": "license_expiry",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "total_deliveries",
+      "type": "int"
+     },
+     {
+      "name": "success_rate",
+      "type": "decimal"
+     }
+    ]
+   },
+   {
+    "name": "Route",
+    "table": "routes",
+    "fields": [
+     {
+      "name": "route_code",
+      "type": "string"
+     },
+     {
+      "name": "origin_hub_id",
+      "type": "uuid"
+     },
+     {
+      "name": "destination_hub_id",
+      "type": "uuid"
+     },
+     {
+      "name": "distance_km",
+      "type": "decimal"
+     },
+     {
+      "name": "estimated_transit_hours",
+      "type": "int"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "Warehouse",
+    "table": "warehouses",
+    "fields": [
+     {
+      "name": "warehouse_code",
+      "type": "string"
+     },
+     {
+      "name": "name",
+      "type": "string"
+     },
+     {
+      "name": "warehouse_type",
+      "type": "string"
+     },
+     {
+      "name": "city",
+      "type": "string"
+     },
+     {
+      "name": "state",
+      "type": "string"
+     },
+     {
+      "name": "pin_code",
+      "type": "string"
+     },
+     {
+      "name": "capacity_sqft",
+      "type": "decimal"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   }
+  ]
+ },
+ "banking": {
+  "base_entity": "BankAccount",
+  "entities": [
+   {
+    "name": "Customer",
+    "table": "customers",
+    "fields": [
+     {
+      "name": "customer_ref",
+      "type": "string"
+     },
+     {
+      "name": "first_name",
+      "type": "string"
+     },
+     {
+      "name": "last_name",
+      "type": "string"
+     },
+     {
+      "name": "date_of_birth",
+      "type": "string"
+     },
+     {
+      "name": "pan_number",
+      "type": "string"
+     },
+     {
+      "name": "aadhaar_hash",
+      "type": "string"
+     },
+     {
+      "name": "kyc_status",
+      "type": "string"
+     },
+     {
+      "name": "risk_category",
+      "type": "string"
+     },
+     {
+      "name": "customer_segment",
+      "type": "string"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     },
+     {
+      "name": "onboarded_at",
+      "type": "string"
+     },
+     {
+      "name": "branch_id",
+      "type": "uuid"
+     }
+    ]
+   },
+   {
+    "name": "BankTransaction",
+    "table": "bank_transactions",
+    "fields": [
+     {
+      "name": "transaction_ref",
+      "type": "string"
+     },
+     {
+      "name": "rrn",
+      "type": "string"
+     },
+     {
+      "name": "from_account_id",
+      "type": "uuid"
+     },
+     {
+      "name": "to_account_id",
+      "type": "uuid"
+     },
+     {
+      "name": "beneficiary_id",
+      "type": "uuid"
+     },
+     {
+      "name": "amount",
+      "type": "decimal"
+     },
+     {
+      "name": "transaction_type",
+      "type": "string"
+     },
+     {
+      "name": "payment_rail",
+      "type": "string"
+     },
+     {
+      "name": "channel",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "balance_before",
+      "type": "decimal"
+     },
+     {
+      "name": "balance_after",
+      "type": "decimal"
+     },
+     {
+      "name": "is_flagged",
+      "type": "bool"
+     },
+     {
+      "name": "initiated_at",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Beneficiary",
+    "table": "beneficiaries",
+    "fields": [
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "beneficiary_name",
+      "type": "string"
+     },
+     {
+      "name": "ifsc_code",
+      "type": "string"
+     },
+     {
+      "name": "account_number",
+      "type": "string"
+     },
+     {
+      "name": "cooldown_until",
+      "type": "string"
+     },
+     {
+      "name": "is_verified",
+      "type": "bool"
+     },
+     {
+      "name": "added_via",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "KycDocument",
+    "table": "kyc_documents",
+    "fields": [
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "document_type",
+      "type": "string"
+     },
+     {
+      "name": "document_number",
+      "type": "string"
+     },
+     {
+      "name": "document_hash",
+      "type": "string"
+     },
+     {
+      "name": "issuing_authority",
+      "type": "string"
+     },
+     {
+      "name": "expiry_date",
+      "type": "string"
+     },
+     {
+      "name": "verification_status",
+      "type": "string"
+     },
+     {
+      "name": "verified_at",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Branch",
+    "table": "branches",
+    "fields": [
+     {
+      "name": "ifsc_code",
+      "type": "string"
+     },
+     {
+      "name": "micr_code",
+      "type": "string"
+     },
+     {
+      "name": "branch_name",
+      "type": "string"
+     },
+     {
+      "name": "city",
+      "type": "string"
+     },
+     {
+      "name": "state",
+      "type": "string"
+     },
+     {
+      "name": "pin_code",
+      "type": "string"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "Nominee",
+    "table": "nominees",
+    "fields": [
+     {
+      "name": "account_id",
+      "type": "uuid"
+     },
+     {
+      "name": "name",
+      "type": "string"
+     },
+     {
+      "name": "relationship",
+      "type": "string"
+     },
+     {
+      "name": "date_of_birth",
+      "type": "string"
+     },
+     {
+      "name": "share_percentage",
+      "type": "decimal"
+     },
+     {
+      "name": "is_minor",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "BankProduct",
+    "table": "bank_products",
+    "fields": [
+     {
+      "name": "product_code",
+      "type": "string"
+     },
+     {
+      "name": "product_name",
+      "type": "string"
+     },
+     {
+      "name": "account_type",
+      "type": "string"
+     },
+     {
+      "name": "minimum_balance",
+      "type": "decimal"
+     },
+     {
+      "name": "daily_txn_limit",
+      "type": "decimal"
+     },
+     {
+      "name": "rtgs_minimum_amount",
+      "type": "decimal"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "FraudAlert",
+    "table": "fraud_alerts",
+    "fields": [
+     {
+      "name": "transaction_id",
+      "type": "uuid"
+     },
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "alert_type",
+      "type": "string"
+     },
+     {
+      "name": "severity",
+      "type": "string"
+     },
+     {
+      "name": "risk_score",
+      "type": "decimal"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "resolved_at",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "AuditLog",
+    "table": "audit_logs",
+    "fields": [
+     {
+      "name": "entity_type",
+      "type": "string"
+     },
+     {
+      "name": "entity_id",
+      "type": "uuid"
+     },
+     {
+      "name": "action",
+      "type": "string"
+     },
+     {
+      "name": "performed_by_role",
+      "type": "string"
+     },
+     {
+      "name": "ip_address",
+      "type": "string"
+     },
+     {
+      "name": "event_timestamp",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "BatchJob",
+    "table": "batch_jobs",
+    "fields": [
+     {
+      "name": "batch_type",
+      "type": "string"
+     },
+     {
+      "name": "scheduled_at",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "total_records",
+      "type": "int"
+     },
+     {
+      "name": "processed_records",
+      "type": "int"
+     },
+     {
+      "name": "failed_records",
+      "type": "int"
+     },
+     {
+      "name": "total_amount",
+      "type": "decimal"
+     }
+    ]
+   }
+  ]
+ },
+ "ecommerce": {
+  "base_entity": "Product",
+  "entities": [
+   {
+    "name": "Customer",
+    "table": "customers",
+    "fields": [
+     {
+      "name": "email",
+      "type": "string"
+     },
+     {
+      "name": "first_name",
+      "type": "string"
+     },
+     {
+      "name": "last_name",
+      "type": "string"
+     },
+     {
+      "name": "marketing_consent",
+      "type": "bool"
+     },
+     {
+      "name": "data_processing_consent",
+      "type": "bool"
+     },
+     {
+      "name": "consent_recorded_at",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "tier",
+      "type": "string"
+     },
+     {
+      "name": "loyalty_points",
+      "type": "int"
+     }
+    ]
+   },
+   {
+    "name": "Address",
+    "table": "addresses",
+    "fields": [
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "address_type",
+      "type": "string"
+     },
+     {
+      "name": "line1",
+      "type": "string"
+     },
+     {
+      "name": "city",
+      "type": "string"
+     },
+     {
+      "name": "state",
+      "type": "string"
+     },
+     {
+      "name": "pin_code",
+      "type": "string"
+     },
+     {
+      "name": "is_default",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "Category",
+    "table": "categories",
+    "fields": [
+     {
+      "name": "name",
+      "type": "string"
+     },
+     {
+      "name": "slug",
+      "type": "string"
+     },
+     {
+      "name": "parent_category_id",
+      "type": "uuid"
+     },
+     {
+      "name": "is_active",
+      "type": "bool"
+     }
+    ]
+   },
+   {
+    "name": "Inventory",
+    "table": "inventory",
+    "fields": [
+     {
+      "name": "product_id",
+      "type": "uuid"
+     },
+     {
+      "name": "warehouse_id",
+      "type": "uuid"
+     },
+     {
+      "name": "quantity_available",
+      "type": "int"
+     },
+     {
+      "name": "quantity_reserved",
+      "type": "int"
+     },
+     {
+      "name": "reorder_level",
+      "type": "int"
+     }
+    ]
+   },
+   {
+    "name": "Cart",
+    "table": "carts",
+    "fields": [
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "subtotal",
+      "type": "decimal"
+     },
+     {
+      "name": "tax_amount",
+      "type": "decimal"
+     },
+     {
+      "name": "total_amount",
+      "type": "decimal"
+     },
+     {
+      "name": "expires_at",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "CartItem",
+    "table": "cart_items",
+    "fields": [
+     {
+      "name": "cart_id",
+      "type": "uuid"
+     },
+     {
+      "name": "product_id",
+      "type": "uuid"
+     },
+     {
+      "name": "quantity",
+      "type": "int"
+     },
+     {
+      "name": "unit_price",
+      "type": "decimal"
+     }
+    ]
+   },
+   {
+    "name": "CustomerOrder",
+    "table": "customer_orders",
+    "fields": [
+     {
+      "name": "order_number",
+      "type": "string"
+     },
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "shipping_address_id",
+      "type": "uuid"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "total_amount",
+      "type": "decimal"
+     },
+     {
+      "name": "payment_status",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Payment",
+    "table": "payments",
+    "fields": [
+     {
+      "name": "order_id",
+      "type": "uuid"
+     },
+     {
+      "name": "amount",
+      "type": "decimal"
+     },
+     {
+      "name": "payment_method",
+      "type": "string"
+     },
+     {
+      "name": "gateway",
+      "type": "string"
+     },
+     {
+      "name": "gateway_transaction_id",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     }
+    ]
+   },
+   {
+    "name": "Review",
+    "table": "reviews",
+    "fields": [
+     {
+      "name": "product_id",
+      "type": "uuid"
+     },
+     {
+      "name": "customer_id",
+      "type": "uuid"
+     },
+     {
+      "name": "rating",
+      "type": "int"
+     },
+     {
+      "name": "title",
+      "type": "string"
+     },
+     {
+      "name": "status",
+      "type": "string"
+     },
+     {
+      "name": "is_verified_purchase",
+      "type": "bool"
+     }
+    ]
+   }
+  ]
+ }
+}
