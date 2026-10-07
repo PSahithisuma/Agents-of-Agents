@@ -256,3 +256,27 @@ _postprocess_entity_before_tenant = postprocess_entity
 
 def postprocess_entity(code, cfg):
     return _postprocess_entity_before_tenant(ensure_tenant_field(code), cfg)
+
+
+# --- audit-field safety net ------------------------------------------------------------------------
+# The generated repository declares  @Query("... e.createdAt >= :cutoff")  and Hibernate validates it at startup,
+# so every entity must have createdAt (and updatedAt, which the persist hooks set). Guarantee both.
+def ensure_audit_fields(code):
+    add = ""
+    if not re.search(r"\bcreatedAt\b", code):
+        add += '\n    @Column(name = "created_at")\n    private LocalDateTime createdAt;\n'
+    if not re.search(r"\bupdatedAt\b", code):
+        add += '\n    @Column(name = "updated_at")\n    private LocalDateTime updatedAt;\n'
+    if not add:
+        return code
+    m = re.search(r"public\s+class\s+\w+[^{]*\{", code)
+    if not m:
+        return code
+    return code[:m.end()] + add + code[m.end():]
+
+
+_postprocess_entity_before_audit = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    return _postprocess_entity_before_audit(ensure_audit_fields(code), cfg)
