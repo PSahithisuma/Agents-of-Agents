@@ -806,6 +806,70 @@ def _pack_entities(pack, spec_data):
     return ENTITY_LISTS.get(pack, [])
 
 
+_BAD_TYPES = {"String", "Object", "Class", "List", "Map", "Set", "Date", "Record", "Enum", "Entity", "Table", "Column", "Id", "Integer", "Long", "Boolean", "CoreEntity"}
+_BAD_SQL = {"user", "order", "group", "table", "select", "column", "index", "check", "default", "grant", "limit",
+            "offset", "primary", "references", "rule", "session", "transaction", "trigger", "view", "desc", "asc",
+            "key", "from", "where", "when", "end", "all", "analyse", "analyze", "both", "case", "cast", "create",
+            "current_user", "do", "else", "false", "true", "for", "foreign", "in", "into", "is", "like", "not",
+            "null", "on", "only", "or", "returning", "some", "then", "to", "union", "unique", "using", "with"}
+_RESERVED_COLS = {"id", "tenant_id", "created_at", "updated_at"}
+
+
+def _validate_planned(items):
+    """Keep only entities that are safe to feed to the per-entity generator (names, tables, fields)."""
+    import re as _r
+    out, seen = [], {"CoreEntity"}
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name", "")).strip()
+        table = str(it.get("table", "")).strip()
+        if not _r.fullmatch(r"[A-Z][A-Za-z0-9]{2,30}", name) or name in _BAD_TYPES or name in seen:
+            continue
+        if not _r.fullmatch(r"[a-z][a-z0-9_]{2,40}", table) or table in _BAD_SQL:
+            continue
+        fields = []
+        raw = it.get("fields", "")
+        toks = raw if isinstance(raw, list) else str(raw).split(",")
+        for tok in toks:
+            tok = str(tok).strip()
+            if not _r.fullmatch(r"[a-z][a-z0-9_]*( \((UUID|BigDecimal|Integer|Boolean)\))?", tok):
+                continue
+            col = tok.split(" ")[0]
+            if col in _RESERVED_COLS or col in _BAD_SQL or any(col == f.split(" ")[0] for f in fields):
+                continue
+            fields.append(tok)
+        if len(fields) < 3:
+            continue
+        seen.add(name)
+        out.append((name, table, ", ".join(fields[:8])))
+        if len(out) == 4:
+            break
+    return out
+
+
+async def _plan_custom_entities(description):
+    """Custom pack: ask the model for 2-4 extra entities, validate hard, fall back to none (single entity)."""
+    import json as _j
+    prompt = (f"You are a software architect. An application is described as: {description}\n"
+              "It already has one core entity named CoreEntity. Propose 2 to 4 additional JPA entities this "
+              "application needs. Reply with ONLY a JSON array and no other text. Each element is an object "
+              '{"name": PascalCase singular noun, "table": snake_case plural, "fields": "comma separated field names"}. '
+              "Field names are snake_case and may be followed by a type in parentheses, one of UUID, BigDecimal, "
+              "Integer, Boolean (use (UUID) for foreign keys such as customer_id). Give 4 to 8 fields per entity. "
+              "Do not include id, tenant_id, created_at or updated_at.")
+    try:
+        raw = strip_fences(await call_groq(prompt, max_tokens=800))
+        a, b = raw.find("["), raw.rfind("]")
+        items = _j.loads(raw[a:b + 1]) if a != -1 and b > a else []
+        planned = _validate_planned(items)
+        logger.info("custom entity plan: %s", [p[0] for p in planned])
+        return planned
+    except Exception as exc:
+        logger.warning("custom entity planning failed (%s); generating the core entity only", exc)
+        return []
+
+
 def resolve_pack(spec_data):
     """Explicit vertical wins; else legacy keyword match on app_name; else fail loudly."""
     v = (spec_data.get("vertical") or "").strip().lower()
@@ -940,6 +1004,10 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     gen_entities = [entity]
     skipped_entities = []
     _extra = _pack_entities(pack, spec_data)
+    if pack == "custom" and not _extra:
+        _extra = await _plan_custom_entities(description)
+        if _extra:
+            await pub(30, "planner", "Planned entities: CoreEntity, " + ", ".join(e[0] for e in _extra))
     _pp = cfg["package"].replace(".", "/")
     _sql_key = "src/main/resources/db/migration/V1__create_tables.sql"
     _base_sql = files[_sql_key]
