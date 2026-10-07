@@ -11,7 +11,7 @@ import time
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -248,3 +248,149 @@ async def get_spec(
         spec_data=row["spec_data"],
         created_at=str(row["created_at"]),
     )
+
+
+# =============================================================================
+# Spec lifecycle: edit a draft -> lock -> generate from the locked spec
+# =============================================================================
+import json as _json
+
+from models.spec_edit import apply_entities, validate_entities
+
+
+class EntitiesEdit(BaseModel):
+    entities: list[dict]
+    note: str = ""
+
+
+def _spec_out(row) -> SpecOut:
+    return SpecOut(
+        id=row["id"], project_id=row["project_id"], tenant_id=row["tenant_id"], version=row["version"],
+        canonical_hash=row["canonical_hash"], frozen_at=str(row["frozen_at"]) if row["frozen_at"] else None,
+        spec_data=row["spec_data"], created_at=str(row["created_at"]),
+    )
+
+
+_SPEC_COLS = "id, project_id, tenant_id, version, canonical_hash, frozen_at, spec_data, created_at"
+
+
+@router.patch(
+    "/{project_id}/specs/{version}/entities",
+    response_model=SpecOut,
+    summary="Replace the extra entities of a DRAFT spec (validated); recomputes the canonical hash",
+)
+async def edit_spec_entities(project_id: UUID, version: int, body: EntitiesEdit,
+                             user: AuthUser = Depends(get_current_user)) -> SpecOut:
+    try:
+        entities = validate_entities(body.entities)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    async with get_tenant_session(user.tenant_id) as session:
+        row = (await session.execute(
+            text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),
+            {"pid": str(project_id), "v": version},
+        )).mappings().one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Spec version not found")
+        if row["frozen_at"] is not None:
+            raise HTTPException(status_code=409, detail="Spec is locked; create a new draft version to change it")
+        try:
+            new_dict, new_hash = apply_entities(row["spec_data"], entities)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"cannot rebuild spec: {exc}")
+        upd = (await session.execute(
+            text(f"""UPDATE application_specs SET spec_data = cast(:sd as jsonb), canonical_hash = :h
+                     WHERE id = :id AND frozen_at IS NULL RETURNING {_SPEC_COLS}"""),
+            {"sd": _json.dumps(new_dict), "h": new_hash, "id": str(row["id"])},
+        )).mappings().one_or_none()
+        if upd is None:
+            raise HTTPException(status_code=409, detail="Spec changed or was locked concurrently; retry")
+        await session.execute(
+            text("""INSERT INTO spec_provenance (tenant_id, spec_id, option_id, json_path, patch_data)
+                    VALUES (:t, :s, :o, :p, cast(:d as jsonb))"""),
+            {"t": str(user.tenant_id), "s": str(row["id"]), "o": "user_edit",
+             "p": "domain_model.entities",
+             "d": _json.dumps({"by": str(user.id), "note": body.note, "entities": [e["name"] for e in entities],
+                               "hash_before": row["canonical_hash"], "hash_after": new_hash})},
+        )
+    return _spec_out(upd)
+
+
+@router.post(
+    "/{project_id}/specs/{version}/lock",
+    response_model=SpecOut,
+    summary="Lock a draft spec (sets frozen_at). A locked spec is immutable.",
+)
+async def lock_spec(project_id: UUID, version: int, user: AuthUser = Depends(get_current_user)) -> SpecOut:
+    async with get_tenant_session(user.tenant_id) as session:
+        row = (await session.execute(
+            text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),
+            {"pid": str(project_id), "v": version},
+        )).mappings().one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Spec version not found")
+        if row["frozen_at"] is not None:
+            return _spec_out(row)          # already locked: idempotent
+        upd = (await session.execute(
+            text(f"UPDATE application_specs SET frozen_at = NOW() WHERE id = :id AND frozen_at IS NULL RETURNING {_SPEC_COLS}"),
+            {"id": str(row["id"])},
+        )).mappings().one_or_none()
+        if upd is None:
+            raise HTTPException(status_code=409, detail="Spec changed concurrently; retry")
+        await session.execute(
+            text("""INSERT INTO spec_provenance (tenant_id, spec_id, option_id, json_path, patch_data)
+                    VALUES (:t, :s, 'lock', '$', cast(:d as jsonb))"""),
+            {"t": str(user.tenant_id), "s": str(row["id"]),
+             "d": _json.dumps({"by": str(user.id), "hash": row["canonical_hash"]})},
+        )
+    return _spec_out(upd)
+
+
+class SpecGenerateOut(BaseModel):
+    job_id: UUID
+    project_id: UUID
+    spec_version: int
+    canonical_hash: Optional[str]
+    stream_url: str
+    cache_hit: bool = False
+
+
+@router.post(
+    "/{project_id}/specs/{version}/generate",
+    response_model=SpecGenerateOut,
+    summary="Generate from a LOCKED spec version (no recompilation)",
+)
+async def generate_from_spec(project_id: UUID, version: int, request: Request,
+                             user: AuthUser = Depends(get_current_user)) -> SpecGenerateOut:
+    base_url = str(request.base_url).rstrip("/")
+    async with get_tenant_session(user.tenant_id) as session:
+        row = (await session.execute(
+            text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),
+            {"pid": str(project_id), "v": version},
+        )).mappings().one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Spec version not found")
+        if row["frozen_at"] is None:
+            raise HTTPException(status_code=409, detail="Lock the spec first: POST .../specs/{version}/lock")
+        live = (await session.execute(
+            text("""SELECT id FROM jobs WHERE spec_id = :s AND status NOT IN ('failed','cancelled')
+                    ORDER BY created_at DESC LIMIT 1"""),
+            {"s": str(row["id"])},
+        )).scalar_one_or_none()
+        if live is not None:
+            return SpecGenerateOut(job_id=live, project_id=project_id, spec_version=version,
+                                   canonical_hash=row["canonical_hash"],
+                                   stream_url=f"{base_url}/api/v1/jobs/{live}/stream", cache_hit=True)
+        n = (await session.execute(text("SELECT COUNT(*) FROM jobs WHERE spec_id = :s"), {"s": str(row["id"])})).scalar()
+        ikey = f"gen-{row['id']}-r{n + 1}"
+        job_id = (await session.execute(
+            text("""INSERT INTO jobs (tenant_id, spec_id, idempotency_key, job_type, status)
+                    VALUES (:t, :s, :k, 'generation', 'queued')
+                    ON CONFLICT (idempotency_key) DO UPDATE SET status = jobs.status RETURNING id"""),
+            {"t": str(user.tenant_id), "s": str(row["id"]), "k": ikey},
+        )).scalar_one()
+    await request.app.state.arq_pool.enqueue_job(
+        "run_generation", _job_id=ikey, job_id=str(job_id), tenant_id=str(user.tenant_id), spec_data=row["spec_data"],
+    )
+    return SpecGenerateOut(job_id=job_id, project_id=project_id, spec_version=version,
+                           canonical_hash=row["canonical_hash"], stream_url=f"{base_url}/api/v1/jobs/{job_id}/stream")
