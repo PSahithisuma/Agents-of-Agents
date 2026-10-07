@@ -6,6 +6,12 @@
 *.pyc
 .env
 __pycache__/
-docker-compose.yml
 generated/
 node_modules/
+.env.*
+*.bak
+*.bak[0-9]*
+*.orig
+*.pre2
+docker-compose.yml.*
+.m2cache/
