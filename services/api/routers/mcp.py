@@ -68,8 +68,8 @@ async def get_mcp_context(user: AuthUser = Depends(get_current_user)):
             "ERD.md"
         ],
         "recent_projects": projects[:5],
-        "api_base": "http://144.24.149.226:8000",
-        "gitea_base": "http://144.24.149.226:3002",
+        "api_base": "https://agents-of-agents.duckdns.org",
+        "gitea_base": "https://agents-of-agents.duckdns.org/gitea",
         "mcp_instructions": "Use POST /api/v1/chat/analyze to analyze requirements. Use POST /api/v1/projects/{id}/generate to generate code. Use GET /api/v1/projects/{id}/jobs/{jid}/download for ZIP."
     }
 

@@ -303,7 +303,8 @@ services:
       GITEA__database__NAME: gitea
       GITEA__database__USER: vibeforge
       GITEA__database__PASSWD: ${POSTGRES_PASSWORD}
-      GITEA__server__ROOT_URL: http://144.24.149.226:3002
+      GITEA__server__ROOT_URL: https://agents-of-agents.duckdns.org/gitea/
+      GITEA__server__DOMAIN: agents-of-agents.duckdns.org
     volumes:
       - gitea_data:/data
     depends_on:

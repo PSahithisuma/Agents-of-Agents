@@ -1057,7 +1057,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
             pushed += 1
             await asyncio.sleep(0.3)
 
-    gitea_url = f"http://144.24.149.226:3002/vibeforge-admin/{repo_name}"
+    gitea_url = f"https://agents-of-agents.duckdns.org/gitea/vibeforge-admin/{repo_name}"
     logger.info(f"Pushed {pushed}/{len(files)} files to {gitea_url}")
 
     if pushed < len(files):
