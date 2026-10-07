@@ -127,7 +127,7 @@ def init_required_defaults(code):
 
 def add_not_null(code):
     import re as _re
-    pat = r'(@Column\s*\([^)]*nullable\s*=\s*false[^)]*\)\s*)(private\s+(?:UUID|String)\s+(?!id\b)[a-z][A-Za-z0-9]*\s*;)'
+    pat = r'(@Column\s*\([^)]*nullable\s*=\s*false[^)]*\)\s*)(private\s+(?:UUID|String)\s+(?!id\b|tenantId\b)[a-z][A-Za-z0-9]*\s*;)'
     return _re.sub(pat, lambda m: m.group(1) + '@jakarta.validation.constraints.NotNull ' + m.group(2), code)
 
 
