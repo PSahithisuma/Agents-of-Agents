@@ -15,7 +15,7 @@ GITEA_TOKEN = os.environ["GITEA_TOKEN"]
 PACK_CONFIG = {
     "banking":   {"entities": 10, "compliance": "RBI Tier-1", "framework": "Spring Boot", "tables": 24, "package": "com.vibebank", "entity": "BankAccount"},
     "ecommerce": {"entities": 11, "compliance": "GDPR",       "framework": "Spring Boot", "tables": 28, "package": "com.omnistore", "entity": "Product"},
-    "logistics": {"entities": 7,  "compliance": "ISO 27001",  "framework": "Spring Boot", "tables": 18, "package": "com.logiroute",  "entity": "Shipment"},
+    "logistics": {"entities": 8,  "compliance": "ISO 27001",  "framework": "Spring Boot", "tables": 18, "package": "com.logiroute",  "entity": "Shipment"},
     "custom":    {"entities": 5,  "compliance": "Custom",     "framework": "Spring Boot", "tables": 20, "package": "com.customapp",  "entity": "CoreEntity"},
 }
 
@@ -62,6 +62,15 @@ async def _compile_check(files, job_id):
 
 
 ENTITY_LISTS = {
+    "logistics": [
+        ("Shipper", "shippers", "company_name, gstin, contact_person, email, phone, credit_limit (BigDecimal), outstanding_amount (BigDecimal), is_active (Boolean)"),
+        ("Carrier", "carriers", "carrier_name, gstin, contact_person, email, phone, status, is_active (Boolean)"),
+        ("TrackingEvent", "tracking_events", "shipment_id (UUID), event_type, location_name, city, latitude (BigDecimal), longitude (BigDecimal), recorded_by (UUID), event_at"),
+        ("Vehicle", "vehicles", "registration_number, vehicle_type, carrier_id (UUID), driver_id (UUID), capacity_kg (BigDecimal), status, current_latitude (BigDecimal), current_longitude (BigDecimal), insurance_expiry, permit_expiry"),
+        ("Driver", "drivers", "carrier_id (UUID), employee_code, first_name, last_name, phone, license_number, license_expiry, status, total_deliveries (Integer), success_rate (BigDecimal)"),
+        ("Route", "routes", "route_code, origin_hub_id (UUID), destination_hub_id (UUID), distance_km (BigDecimal), estimated_transit_hours (Integer), is_active (Boolean)"),
+        ("Warehouse", "warehouses", "warehouse_code, name, warehouse_type, city, state, pin_code, capacity_sqft (BigDecimal), is_active (Boolean)"),
+    ],
     "banking": [
         ("Customer", "customers", "customer_ref, first_name, last_name, date_of_birth, pan_number, aadhaar_hash, kyc_status, risk_category, customer_segment, is_active (Boolean), onboarded_at, branch_id (UUID)"),
         ("BankTransaction", "bank_transactions", "transaction_ref, rrn, from_account_id (UUID), to_account_id (UUID), beneficiary_id (UUID), amount (BigDecimal), transaction_type, payment_rail, channel, status, balance_before (BigDecimal), balance_after (BigDecimal), is_flagged (Boolean), initiated_at"),
@@ -797,7 +806,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     PACK_PROMPTS = {
         "banking": f"Generate a Java Spring Boot JPA @Entity class named BankAccount for RBI Tier-1 banking. Package: com.vibebank.entity. Include 24 fields: id (UUID), account_number, iban, swift_bic, holder_full_name, holder_email, holder_phone, account_type, currency, balance (BigDecimal), available_balance (BigDecimal), status, aml_flag (Boolean), rbi_audit_id, branch_code, ifsc_code, nominee_name, kyc_status, credit_limit (BigDecimal), interest_rate (BigDecimal), tenant_id (UUID), created_at (LocalDateTime), updated_at (LocalDateTime). Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
         "ecommerce": f"Generate a Java Spring Boot JPA @Entity class named Product for GDPR e-commerce. Package: com.omnistore.entity. Include 28 fields: id (UUID), sku, name, description, price (BigDecimal), stock_quantity (Integer), category, brand, gst_hsn_code, gdpr_consent_required (Boolean), seller_id (UUID), weight (BigDecimal), dimensions, image_url, rating (BigDecimal), review_count (Integer), discount_percent (BigDecimal), tax_rate (BigDecimal), status, tenant_id (UUID), created_at, updated_at. Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
-        "logistics": f"Generate a Java Spring Boot JPA @Entity class named FleetVehicle for ISO 27001 logistics. Package: com.logiroute.entity. Include 18 fields: id (UUID), vehicle_id, plate_number, driver_name, gps_lat (Double), gps_lng (Double), route_id (UUID), cargo_weight (BigDecimal), status, iso_audit_id, last_checkpoint, fuel_level (BigDecimal), speed_kmh (BigDecimal), engine_status, waybill_number, tenant_id (UUID), created_at, updated_at. Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
+        "logistics": f"Generate a Java Spring Boot JPA @Entity class named Shipment for ISO 27001 logistics. Package: com.logiroute.entity. Include 23 fields: id (UUID), awb_number, shipper_id (UUID), consignee_name, consignee_phone, service_type, shipment_type, status, weight_grams (Integer), declared_value (BigDecimal), cod_amount (BigDecimal), is_cod (Boolean), is_fragile (Boolean), vehicle_id (UUID), driver_id (UUID), route_id (UUID), estimated_delivery_at, actual_delivery_at, delivery_otp, attempt_count (Integer), tenant_id (UUID), created_at, updated_at. Use @Entity @Table @Id @GeneratedValue(UUID) @Column. Return only Java code.",
         "custom": f"Generate a Java Spring Boot JPA @Entity class for this requirement: {description}. Create appropriate entity with relevant fields. Package: com.customapp.entity. Use @Entity @Table @Id @GeneratedValue(UUID) @Column annotations. Return only Java code.",
     }
 
