@@ -197,7 +197,7 @@ def postprocess_entity(code, cfg):
         _m = re.search(r"private\s+(?:java\.util\.)?UUID\s+tenantId\s*;", code)
         if _m:
             code = code[:_m.end()] + "\n\n    @jakarta.persistence.PrePersist\n    protected void onCreateTenant() {\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT\n    }\n" + code[_m.end():]
-    return add_missing_accessors(code)
+    return ensure_imports(add_missing_accessors(code))
 
 
 # --- dedupe hook: remove members the model wrote twice (appended; original pipeline untouched) ---
@@ -207,3 +207,32 @@ _prev_postprocess_entity = postprocess_entity
 
 def postprocess_entity(code, cfg):
     return _dedupe_members(_prev_postprocess_entity(code, cfg))
+
+
+_STD_IMPORTS = {
+    "UUID": "java.util.UUID", "BigDecimal": "java.math.BigDecimal",
+    "LocalDate": "java.time.LocalDate", "LocalDateTime": "java.time.LocalDateTime",
+    "Instant": "java.time.Instant", "List": "java.util.List", "Set": "java.util.Set",
+    "Map": "java.util.Map", "Optional": "java.util.Optional",
+}
+
+
+def ensure_imports(code):
+    """Add standard imports the model used but forgot (compile gate: cannot find symbol)."""
+    import re as _re
+    body = _re.sub(r"^import [^;]+;[ \t]*$", "", code, flags=_re.M)
+    missing = []
+    for simple, fq in _STD_IMPORTS.items():
+        if not _re.search(r"(?<![\w.])" + simple + r"\b", body):
+            continue
+        pkg = fq.rsplit(".", 1)[0]
+        if _re.search(r"^import\s+(?:" + _re.escape(fq) + "|" + _re.escape(pkg) + r"\.\*)\s*;", code, flags=_re.M):
+            continue
+        missing.append(fq)
+    if not missing:
+        return code
+    lines = "".join("import %s;\n" % fq for fq in missing)
+    m = _re.search(r"^package\s+[^;]+;[ \t]*\n", code, flags=_re.M)
+    if m:
+        return code[:m.end()] + lines + code[m.end():]
+    return lines + code
