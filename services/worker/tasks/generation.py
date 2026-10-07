@@ -6,7 +6,9 @@ from tasks.postprocess import strip_fences, table_name, postprocess_entity, gene
 from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-GROQ_MODEL = "qwen/qwen3.8-27b"
+GROQ_MODEL = os.getenv("LLM_MODEL", "coder-model")
+LLM_URL = os.environ.get("LITELLM_BASE_URL", "http://litellm:4000").rstrip("/") + "/v1/chat/completions"
+LLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 GITEA_URL = "http://gitea:3000"
 GITEA_TOKEN = os.environ["GITEA_TOKEN"]
 
@@ -15,6 +17,74 @@ PACK_CONFIG = {
     "ecommerce": {"entities": 11, "compliance": "GDPR",       "framework": "Spring Boot", "tables": 28, "package": "com.omnistore", "entity": "Product"},
     "logistics": {"entities": 7,  "compliance": "ISO 27001",  "framework": "Spring Boot", "tables": 18, "package": "com.logiroute",  "entity": "Shipment"},
     "custom":    {"entities": 5,  "compliance": "Custom",     "framework": "Spring Boot", "tables": 20, "package": "com.customapp",  "entity": "CoreEntity"},
+}
+
+def _clean_entity(code, ename):
+    import re
+    code = re.sub(r"^import [^;]*\b(AuditingEntity|UUIDGenerator|GenericGenerator)\b[^;]*;[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r"^[ \t]*@(Audited|AuditingEntity)\b[^\n]*\n", "", code, flags=re.M)
+    code = re.sub(r"^[ \t]*@GenericGenerator\([^\n]*\)[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r'@GeneratedValue\(\s*generator\s*=\s*"[^"]*"\s*\)', "@GeneratedValue", code)
+    code = re.sub(r"\b(?:protected|private)\s+" + re.escape(ename) + r"\s*\(\s*\)", "public " + ename + "()", code)
+    return code
+
+
+async def _compile_check(files, job_id):
+    import re, shutil
+    d = f"/tmp/gate-{job_id}"
+    shutil.rmtree(d, ignore_errors=True)
+    for path, content in files.items():
+        fp = os.path.join(d, path)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w") as f:
+            f.write(content)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "mvn", "-q", "-B", "-DskipTests", "-Dmaven.repo.local=/app/.m2", "test-compile",
+            cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except FileNotFoundError:
+        return {"status": "unavailable", "bad": set()}
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"status": "timeout", "bad": set()}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    text = out.decode("utf-8", "replace")
+    if proc.returncode == 0:
+        return {"status": "ok", "bad": set()}
+    bad = set(re.findall(r"\[ERROR\][^\n]*?/([A-Za-z0-9_]+)\.java:\[", text))
+    logger.error(f"compile gate failed for {job_id}: {text[-1200:]}")
+    return {"status": "fail", "bad": bad}
+
+
+ENTITY_LISTS = {
+    "banking": [
+        ("Customer", "customers", "customer_ref, first_name, last_name, date_of_birth, pan_number, aadhaar_hash, kyc_status, risk_category, customer_segment, is_active (Boolean), onboarded_at, branch_id (UUID)"),
+        ("BankTransaction", "bank_transactions", "transaction_ref, rrn, from_account_id (UUID), to_account_id (UUID), beneficiary_id (UUID), amount (BigDecimal), transaction_type, payment_rail, channel, status, balance_before (BigDecimal), balance_after (BigDecimal), is_flagged (Boolean), initiated_at"),
+        ("Beneficiary", "beneficiaries", "customer_id (UUID), beneficiary_name, ifsc_code, account_number, cooldown_until, is_verified (Boolean), added_via"),
+        ("KycDocument", "kyc_documents", "customer_id (UUID), document_type, document_number, document_hash, issuing_authority, expiry_date, verification_status, verified_at"),
+        ("Branch", "branches", "ifsc_code, micr_code, branch_name, city, state, pin_code, is_active (Boolean)"),
+        ("Nominee", "nominees", "account_id (UUID), name, relationship, date_of_birth, share_percentage (BigDecimal), is_minor (Boolean)"),
+        ("BankProduct", "bank_products", "product_code, product_name, account_type, minimum_balance (BigDecimal), daily_txn_limit (BigDecimal), rtgs_minimum_amount (BigDecimal), is_active (Boolean)"),
+        ("FraudAlert", "fraud_alerts", "transaction_id (UUID), customer_id (UUID), alert_type, severity, risk_score (BigDecimal), status, resolved_at"),
+        ("AuditLog", "audit_logs", "entity_type, entity_id (UUID), action, performed_by_role, ip_address, event_timestamp"),
+        ("BatchJob", "batch_jobs", "batch_type, scheduled_at, status, total_records (Integer), processed_records (Integer), failed_records (Integer), total_amount (BigDecimal)"),
+    ],
+    "ecommerce": [
+        ("Customer", "customers", "email, first_name, last_name, marketing_consent (Boolean), data_processing_consent (Boolean), consent_recorded_at, status, tier, loyalty_points (Integer)"),
+        ("Address", "addresses", "customer_id (UUID), address_type, line1, city, state, pin_code, is_default (Boolean)"),
+        ("Category", "categories", "name, slug, parent_category_id (UUID), is_active (Boolean)"),
+        ("Inventory", "inventory", "product_id (UUID), warehouse_id (UUID), quantity_available (Integer), quantity_reserved (Integer), reorder_level (Integer)"),
+        ("Cart", "carts", "customer_id (UUID), status, subtotal (BigDecimal), tax_amount (BigDecimal), total_amount (BigDecimal), expires_at"),
+        ("CartItem", "cart_items", "cart_id (UUID), product_id (UUID), quantity (Integer), unit_price (BigDecimal)"),
+        ("CustomerOrder", "customer_orders", "order_number, customer_id (UUID), shipping_address_id (UUID), status, total_amount (BigDecimal), payment_status"),
+        ("Payment", "payments", "order_id (UUID), amount (BigDecimal), payment_method, gateway, gateway_transaction_id, status"),
+        ("Review", "reviews", "product_id (UUID), customer_id (UUID), rating (Integer), title, status, is_verified_purchase (Boolean)"),
+    ],
 }
 
 ERD_TEMPLATES = {
@@ -101,24 +171,24 @@ def _usage_list():
     lst = _LLM_USAGE_VAR.get()
     return lst if lst is not None else LLM_USAGE
 
-async def call_groq(prompt):
+async def call_groq(prompt, max_tokens=3000):
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
+            LLM_URL,
+            headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
         )
         if resp.status_code == 429:
             logger.warning("Rate limited, waiting 35s...")
             await asyncio.sleep(35)
             resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000}
+                LLM_URL,
+                headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
             )
         data = resp.json()
         if resp.status_code != 200 or "choices" not in data:
-            raise RuntimeError(f"Groq error {resp.status_code}: {str(data)[:200]}")
+            raise RuntimeError(f"Groq error {resp.status_code}: {str(data)[:600]}")
         choice = data["choices"][0]
         _u = data.get("usage") or {}
         _usage_list().append({"model": GROQ_MODEL, "prompt_tokens": int(_u.get("prompt_tokens", 0)), "completion_tokens": int(_u.get("completion_tokens", 0))})
@@ -241,7 +311,7 @@ import java.util.UUID;
 @Repository
 public interface {entity}Repository extends JpaRepository<{entity}, UUID> {{
 
-    List<{entity}> findByStatus(String status);
+{"    List<" + entity + "> findByStatus(String status);" if cfg.get("has_status", True) else ""}
 
     Optional<{entity}> findByIdAndTenantId(UUID id, UUID tenantId);
 
@@ -252,7 +322,7 @@ public interface {entity}Repository extends JpaRepository<{entity}, UUID> {{
         return findCreatedSince(java.time.LocalDateTime.now().minusDays(30));
     }}
 
-    long countByStatus(String status);
+{"    long countByStatus(String status);" if cfg.get("has_status", True) else ""}
 }}"""
 
 def generate_service(cfg):
@@ -717,10 +787,10 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         logger.info(f"[{job_id}] {progress}% {stage}: {message}")
 
     await db_mark_running(tenant_id, job_id)
-    await pub(10, "planner", f"Analyzing {pack} domain — {cfg['entities']} entities, {cfg['compliance']} compliance")
+    await pub(10, "planner", f"Analyzing {pack} domain — {len(ENTITY_LISTS.get(pack, [])) + 1} entities, {cfg['compliance']} compliance")
     await asyncio.sleep(0.5)
 
-    await pub(25, "spec_ir", f"Compiling Spec IR — {cfg['entities']} entities, generating {cfg['tables']} table schema")
+    await pub(25, "spec_ir", f"Compiling Spec IR — {len(ENTITY_LISTS.get(pack, [])) + 1} entities")
     await asyncio.sleep(0.5)
 
     # REAL LLM CALL — Generate Entity class
@@ -759,6 +829,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         entity_code = "// HUMAN REVIEW REQUIRED - AI failed 3 attempts. Please write " + entity + " entity manually."
 
     entity_code = postprocess_entity(entity_code, cfg)
+    entity_code = _clean_entity(entity_code, entity)
     await pub(40, "architect", f"Generating {cfg['framework']} project structure — 7 files")
     await asyncio.sleep(0.5)
 
@@ -769,7 +840,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     service = generate_service(cfg)
     controller = generate_controller(cfg)
     sql = generate_flyway_sql(cfg, pack)
-    if pack != "banking":
+    if True:
         from tasks.postprocess import sql_from_entity
         _gen_sql = sql_from_entity(entity_code, cfg)
         if _gen_sql:
@@ -801,9 +872,96 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         "ERD.md": erd_md + disclaimer,
         test_path: test_code,
         f"src/main/java/{cfg['package'].replace('.','/')}/{entity}ServiceApplication.java": generate_application_class(cfg),
+        ".gitignore": ".env\ntarget/\n*.log\n.idea/\n",
         "Dockerfile": generate_dockerfile(cfg),
         "docker-compose.yml": generate_docker_compose(cfg, pack),
     }
+
+    # --- MULTI-ENTITY: generate the remaining entities of the pack, one LLM call each ---
+    gen_entities = [entity]
+    skipped_entities = []
+    _extra = ENTITY_LISTS.get(pack, [])
+    _pp = cfg["package"].replace(".", "/")
+    _sql_key = "src/main/resources/db/migration/V1__create_tables.sql"
+    _base_sql = files[_sql_key]
+    _ent_sql = {}
+    for _i, (_ename, _table, _fields) in enumerate(_extra, 1):
+        await pub(45, "architect", f"Generating entity {_i}/{len(_extra)}: {_ename}")
+        _cfg = {**cfg, "entity": _ename, "has_status": True}
+        _code = None
+        for _attempt in (1, 2, 3):
+            try:
+                _prompt = (f"Generate a Java Spring Boot JPA @Entity class named {_ename} for {cfg['compliance']} {pack}. "
+                           f"Package: {cfg['package']}.entity. Fields: id (UUID), {_fields}, tenant_id (UUID), created_at, updated_at. "
+                           f"Foreign keys are plain UUID fields, no relationship annotations. "
+                           f"Use @Entity @Table(name=\"{_table}\") @Id @GeneratedValue(UUID) @Column. Return only Java code.")
+                _p = _prompt + (" Be compact: no comments, no Javadoc, no helper methods, no Lombok." if _attempt > 1 else "")
+                _c = strip_fences(await call_groq(_p, max_tokens={1: 1800, 2: 1200, 3: 900}[_attempt]))
+                _c, _issues = await self_heal(_c, pack, _ename, cfg["compliance"])
+                if not _issues:
+                    _code = postprocess_entity(_c, _cfg)
+                    break
+                logger.warning(f"{_ename} attempt {_attempt} issues: {_issues}")
+            except Exception as e:
+                logger.error(f"{_ename} attempt {_attempt} error: {e}")
+                if "429" in str(e):
+                    await asyncio.sleep(30)
+            await asyncio.sleep(2)
+        if _code is None:
+            skipped_entities.append(_ename)
+            continue
+        import re as _re
+        _cfg["has_status"] = bool(_re.search(r"\bstatus\b", _code))
+        _code = _clean_entity(_code, _ename)
+        files[f"src/main/java/{_pp}/entity/{_ename}.java"] = _code
+        files[f"src/main/java/{_pp}/repository/{_ename}Repository.java"] = generate_repository(_cfg)
+        files[f"src/main/java/{_pp}/service/{_ename}Service.java"] = generate_service(_cfg)
+        files[f"src/main/java/{_pp}/controller/{_ename}Controller.java"] = generate_controller(_cfg)
+        files[f"src/test/java/{_pp}/{_ename}ServiceTest.java"] = generate_junit_test(_cfg)
+        from tasks.postprocess import sql_from_entity as _sfe
+        _s = _sfe(_code, _cfg)
+        if not _s:
+            logger.warning(f"{_ename}: no SQL could be derived from the entity, dropping it")
+            for _k in (f"src/main/java/{_pp}/entity/{_ename}.java", f"src/main/java/{_pp}/repository/{_ename}Repository.java",
+                       f"src/main/java/{_pp}/service/{_ename}Service.java", f"src/main/java/{_pp}/controller/{_ename}Controller.java",
+                       f"src/test/java/{_pp}/{_ename}ServiceTest.java"):
+                files.pop(_k, None)
+            skipped_entities.append(_ename)
+            await asyncio.sleep(4)
+            continue
+        files[_sql_key] = files[_sql_key] + "\n\n" + _s
+        _ent_sql[_ename] = _s
+        gen_entities.append(_ename)
+        await asyncio.sleep(4)
+    # --- COMPILE GATE: drop entities that do not compile, say so in the status ---
+    await pub(75, "qa_gate", "Compiling generated project (Maven)...")
+    gate_note = ""
+    for _round in range(3):
+        _res = await _compile_check(files, job_id)
+        if _res["status"] == "ok":
+            gate_note = "; compile check passed"
+            break
+        if _res["status"] != "fail":
+            gate_note = f"; compile check {_res['status']}"
+            break
+        _drop = [en for en in gen_entities if en != entity and any(
+            b in (en, en + "Repository", en + "Service", en + "Controller", en + "ServiceTest") for b in _res["bad"])]
+        if not _drop:
+            gate_note = "; COMPILE CHECK FAILED in shared files, repo may not build"
+            break
+        for en in _drop:
+            for k in (f"src/main/java/{_pp}/entity/{en}.java", f"src/main/java/{_pp}/repository/{en}Repository.java",
+                      f"src/main/java/{_pp}/service/{en}Service.java", f"src/main/java/{_pp}/controller/{en}Controller.java",
+                      f"src/test/java/{_pp}/{en}ServiceTest.java"):
+                files.pop(k, None)
+            gen_entities.remove(en)
+            skipped_entities.append(en)
+            _ent_sql.pop(en, None)
+        files[_sql_key] = _base_sql + "".join("\n\n" + _ent_sql[e] for e in gen_entities if e in _ent_sql)
+        logger.warning(f"compile gate round {_round + 1}: dropped {_drop}")
+    else:
+        gate_note = "; COMPILE CHECK FAILED after 3 rounds, repo may not build"
+    _skip_note = (f" (skipped: {', '.join(skipped_entities)})" if skipped_entities else "") + gate_note
 
     for path, content in files.items():
         full_path = f"{out_dir}/{path}"
@@ -817,7 +975,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     await asyncio.sleep(0.5)
 
     heal_msg = f" Self-healed {len(heal_issues)} issues." if heal_issues else " No issues found."
-    await pub(80, "qa_gate", f"Static checks only (entity annotations, no compile or security scan yet).{heal_msg}")
+    await pub(80, "qa_gate", f"Static entity checks done; Maven compile check runs next.{heal_msg}")
     await asyncio.sleep(0.5)
 
     # Push ALL files to Gitea
@@ -842,7 +1000,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea. Repo may be incomplete: {gitea_url}")
         return {"status": "failed", "pack": pack, "files": pushed, "expected": len(files), "gitea_url": gitea_url}
     await db_mark_done(tenant_id, job_id, "completed", gitea_url)
-    await pub(100, "complete", f"Done — {pushed} files pushed. {cfg['compliance']}-aligned template, not a compliance certification. Repo: {gitea_url}")
+    await pub(100, "complete", f"Done — {pushed} files pushed, {len(gen_entities)} entities generated{_skip_note}. {cfg['compliance']}-aligned template, not a compliance certification. Repo: {gitea_url}")
     return {"status": "completed", "pack": pack, "tables": cfg["tables"], "files": pushed, "gitea_url": gitea_url}
 
 

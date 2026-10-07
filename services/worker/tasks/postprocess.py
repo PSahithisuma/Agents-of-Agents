@@ -18,15 +18,16 @@ def _base_postprocess(code, cfg):
     code = re.sub(r'(@Table\s*\(\s*name\s*=\s*")[^"]*(")',
                   lambda m: m.group(1) + table + m.group(2), code, count=1)
     if "PrePersist" not in code:
-        m = re.search(r"private\s+(?:java\.time\.)?LocalDateTime\s+createdAt\s*;", code)
+        m = re.search(r"private\s+(?:java\.time\.)?(LocalDateTime|Instant)\s+createdAt\s*;", code)
         if m:
-            has_upd = re.search(r"private\s+(?:java\.time\.)?LocalDateTime\s+updatedAt\s*;", code) is not None
-            hook = "\n\n    @jakarta.persistence.PrePersist\n    protected void onCreate() {\n        java.time.LocalDateTime now = java.time.LocalDateTime.now();\n        if (this.createdAt == null) this.createdAt = now;\n"
+            has_upd = re.search(r"private\s+(?:java\.time\.)?(?:LocalDateTime|Instant)\s+updatedAt\s*;", code) is not None
+            _T = m.group(1)
+            hook = "\n\n    @jakarta.persistence.PrePersist\n    protected void onCreate() {\n        java.time." + _T + " now = java.time." + _T + ".now();\n        if (this.createdAt == null) this.createdAt = now;\n"
             if has_upd:
                 hook += "        if (this.updatedAt == null) this.updatedAt = now;\n"
             hook += "    }\n"
             if has_upd and "PreUpdate" not in code:
-                hook += "\n    @jakarta.persistence.PreUpdate\n    protected void onUpdate() {\n        this.updatedAt = java.time.LocalDateTime.now();\n    }\n"
+                hook += "\n    @jakarta.persistence.PreUpdate\n    protected void onUpdate() {\n        this.updatedAt = java.time." + _T + ".now();\n    }\n"
             code = code[:m.end()] + hook + code[m.end():]
     return code
 
@@ -91,6 +92,9 @@ def sql_from_entity(code, cfg):
         nm = _re.search(r'name\s*=\s*"([^"]+)"', attrs)
         col = nm.group(1) if nm else _re.sub(r"(?<!^)(?=[A-Z])", "_", fname).lower()
         sqltype = _SQL_TYPES.get(jtype)
+        if sqltype is None and "@Enumerated" in code and jtype[:1].isupper() and (
+                _re.search(r"enum\s+" + jtype + r"\b", code) or _re.search(r"@Enumerated[^;]*?\b" + jtype + r"\s+" + fname + r"\s*;", code)):
+            sqltype = "VARCHAR(30)"
         if sqltype is None:
             continue
         ln = _re.search(r'length\s*=\s*(\d+)', attrs)
@@ -185,6 +189,14 @@ def postprocess_entity(code, cfg):
             "if (this.createdAt == null) this.createdAt = now;",
             "if (this.createdAt == null) this.createdAt = now;\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT placeholder",
             1)
+    if "tenantId" in code and "DEFAULT_TENANT" not in code and "PrePersist" in code:
+        _pm = re.search(r"@jakarta\.persistence\.PrePersist\s+(?:public |protected |private )?void\s+\w+\s*\(\s*\)\s*\{", code) or re.search(r"@PrePersist\s+(?:public |protected |private )?void\s+\w+\s*\(\s*\)\s*\{", code)
+        if _pm:
+            code = code[:_pm.end()] + "\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT" + code[_pm.end():]
+    if "tenantId" in code and "DEFAULT_TENANT" not in code and "PrePersist" not in code:
+        _m = re.search(r"private\s+(?:java\.util\.)?UUID\s+tenantId\s*;", code)
+        if _m:
+            code = code[:_m.end()] + "\n\n    @jakarta.persistence.PrePersist\n    protected void onCreateTenant() {\n        if (this.tenantId == null) this.tenantId = java.util.UUID.fromString(\"00000000-0000-0000-0000-000000000001\"); // DEFAULT_TENANT\n    }\n" + code[_m.end():]
     return add_missing_accessors(code)
 
 
