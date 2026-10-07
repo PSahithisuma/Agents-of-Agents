@@ -1,4 +1,4 @@
-﻿# LiteLLM Proxy - VibeForge
+# LiteLLM Proxy - VibeForge
 # Phase 5: Groq (LPU) as primary model, Gemini Flash as fallback
 # Groq llama-3.1-70b: 30 req/min free tier (vs qwen3.6-27b which was 3 req/hr)
 model_list:
@@ -11,12 +11,6 @@ model_list:
       timeout: 180
       max_retries: 2
 
-  - model_name: coder-model
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-      timeout: 180
-      max_retries: 2
 
   # ── Agent reasoning model ────────────────────────────────────────────────────
   - model_name: agent-model
@@ -26,12 +20,6 @@ model_list:
       timeout: 120
       max_retries: 2
 
-  - model_name: agent-model
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-      timeout: 120
-      max_retries: 2
 
   # ── Smart / reasoning model ──────────────────────────────────────────────────
   - model_name: smart-model
@@ -41,12 +29,6 @@ model_list:
       timeout: 180
       max_retries: 3
 
-  - model_name: smart-model
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-      timeout: 180
-      max_retries: 3
 
   # ── Fast / gate model ────────────────────────────────────────────────────────
   - model_name: fast-model
@@ -56,12 +38,6 @@ model_list:
       timeout: 30
       max_retries: 1
 
-  - model_name: fast-model
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-      timeout: 30
-      max_retries: 1
 
   - model_name: gate-model
     litellm_params:
@@ -70,12 +46,6 @@ model_list:
       timeout: 60
       max_retries: 1
 
-  - model_name: gate-model
-    litellm_params:
-      model: gemini/gemini-2.0-flash
-      api_key: os.environ/GEMINI_API_KEY
-      timeout: 60
-      max_retries: 1
 
 router_settings:
   routing_strategy: least-busy

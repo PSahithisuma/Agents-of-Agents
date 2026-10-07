@@ -7,7 +7,9 @@ import httpx, os
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-GROQ_MODEL = "qwen/qwen3.8-27b"
+GROQ_MODEL = os.getenv("LLM_MODEL", "agent-model")
+LLM_URL = os.environ.get("LITELLM_BASE_URL", "http://litellm:4000").rstrip("/") + "/v1/chat/completions"
+LLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
 class ChatMessage(BaseModel):
     message: str
@@ -47,8 +49,8 @@ Rules:
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                LLM_URL,
+                headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
                 json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 500}
             )
             text = resp.json()["choices"][0]["message"]["content"]
