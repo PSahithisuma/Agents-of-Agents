@@ -46,7 +46,7 @@ async def startup(ctx):
             _conn = await asyncpg.connect(_url.replace("+asyncpg", ""))
             try:
                 _res = await _conn.execute(
-                    "UPDATE jobs SET status='failed', updated_at=NOW() WHERE status='running'"
+                    "UPDATE jobs SET status='failed' WHERE status='running'"
                 )
                 logger.warning("[Worker] orphaned running jobs on startup: %s", _res)
             finally:
