@@ -48,7 +48,10 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 """, unsafe_allow_html=True)
 
 # ── Auth token from session or env ────────────────────────────────────────────
-token = st.session_state.get("token", DEV_TOKEN)
+token = st.session_state.get("token")
+if not token:
+    st.warning("Please log in on the main page first.")
+    st.stop()
 hdrs  = {"Authorization": f"Bearer {token}"}
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
