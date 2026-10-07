@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     # ── Redis ──────────────────────────────────────────────────────────────────
     # Full DSN used by redis.asyncio (pub/sub)
-    REDIS_URL: str = "redis://:redis_dev_secret@redis:6379/0"
+    REDIS_URL: str = "redis://redis:6379/0"
     # Explicit params used by Arq (doesn't parse full DSN reliably)
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379

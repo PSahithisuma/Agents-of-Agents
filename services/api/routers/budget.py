@@ -10,9 +10,15 @@ import os
 from datetime import date, timedelta
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from core.auth import AuthUser, get_current_user
 
 router = APIRouter(prefix="/api/v1/budget", tags=["budget"])
+
+
+def _own_tenant(user, tenant_id):
+    if str(getattr(user, "tenant_id", "")) != str(tenant_id):
+        raise HTTPException(status_code=403, detail="tenant mismatch")
 
 _REDIS_HOST     = os.environ.get("REDIS_HOST", "localhost")
 _REDIS_PORT     = int(os.environ.get("REDIS_PORT", "6379"))
@@ -56,7 +62,8 @@ async def _jobs_per_day(tenant_id: str, days: int) -> dict:
 
 
 @router.get("/{tenant_id}/summary")
-async def get_budget_summary(tenant_id: str):
+async def get_budget_summary(tenant_id: str, user: AuthUser = Depends(get_current_user)):
+    _own_tenant(user, tenant_id)
     """Today's job count (from the jobs table) and LLM tokens (from Redis counters)."""
     today = date.today().isoformat()
     data = await _redis().hgetall(f"budget:{tenant_id}:{today}")
@@ -72,7 +79,8 @@ async def get_budget_summary(tenant_id: str):
 
 
 @router.get("/{tenant_id}/history")
-async def get_budget_history(tenant_id: str, days: int = 7):
+async def get_budget_history(tenant_id: str, days: int = 7, user: AuthUser = Depends(get_current_user)):
+    _own_tenant(user, tenant_id)
     """Per-day jobs (jobs table) and LLM tokens (Redis counters) for the last N days."""
     r = _redis()
     jobs = await _jobs_per_day(tenant_id, days)
@@ -94,7 +102,7 @@ metrics_router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
 
 
 @metrics_router.get("/summary")
-async def metrics_summary():
+async def metrics_summary(user: AuthUser = Depends(get_current_user)):
     """Dashboard KPIs from the database. Values the DB cannot know are returned as 0."""
     from sqlalchemy import text
     from core.database import get_tenant_session
