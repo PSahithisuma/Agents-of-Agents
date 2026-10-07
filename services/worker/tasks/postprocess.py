@@ -236,3 +236,23 @@ def ensure_imports(code):
     if m:
         return code[:m.end()] + lines + code[m.end():]
     return lines + code
+
+
+# --- tenantId safety net -------------------------------------------------------------------------
+# Generated repositories declare findByIdAndTenantId(...), so EVERY entity must have a tenantId property;
+# otherwise Spring Data fails at startup. The model sometimes omits it, so guarantee it here.
+def ensure_tenant_field(code):
+    if re.search(r"\btenantId\b", code):
+        return code
+    m = re.search(r"public\s+class\s+\w+[^{]*\{", code)
+    if not m:
+        return code
+    field = '\n\n    @Column(name = "tenant_id")\n    private UUID tenantId;\n'
+    return code[:m.end()] + field + code[m.end():]
+
+
+_postprocess_entity_before_tenant = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    return _postprocess_entity_before_tenant(ensure_tenant_field(code), cfg)
