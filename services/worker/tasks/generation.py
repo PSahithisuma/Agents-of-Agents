@@ -961,6 +961,39 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         logger.warning(f"compile gate round {_round + 1}: dropped {_drop}")
     else:
         gate_note = "; COMPILE CHECK FAILED after 3 rounds, repo may not build"
+    # --- BOOT GATE: the app must start and answer every entity endpoint ---
+    if gate_note == "; compile check passed":
+        from tasks.bootcheck import run_boot_check
+        await pub(78, "qa_gate", "Booting generated app against a throwaway database...")
+        for _bround in range(3):
+            try:
+                _b = await run_boot_check(files, job_id)
+            except Exception as _be:
+                logger.error(f"boot gate crashed: {_be}")
+                gate_note += "; boot check unavailable"
+                break
+            if _b["status"] == "ok":
+                gate_note = f"; compile + boot check passed (POST ok {_b['post_ok']}/{_b['total']})"
+                break
+            if _b["status"] == "unavailable":
+                gate_note += "; boot check unavailable"
+                break
+            _bdrop = [en for en in gen_entities if en != entity and en in _b["bad"]]
+            if not _bdrop:
+                gate_note = "; BOOT CHECK FAILED, repo may not start"
+                break
+            for en in _bdrop:
+                for k in (f"src/main/java/{_pp}/entity/{en}.java", f"src/main/java/{_pp}/repository/{en}Repository.java",
+                          f"src/main/java/{_pp}/service/{en}Service.java", f"src/main/java/{_pp}/controller/{en}Controller.java",
+                          f"src/test/java/{_pp}/{en}ServiceTest.java"):
+                    files.pop(k, None)
+                gen_entities.remove(en)
+                skipped_entities.append(en)
+                _ent_sql.pop(en, None)
+            files[_sql_key] = _base_sql + "".join("\n\n" + _ent_sql[e] for e in gen_entities if e in _ent_sql)
+            logger.warning(f"boot gate round {_bround + 1}: dropped {_bdrop}")
+        else:
+            gate_note = "; BOOT CHECK FAILED after 3 rounds, repo may not start"
     _skip_note = (f" (skipped: {', '.join(skipped_entities)})" if skipped_entities else "") + gate_note
 
     for path, content in files.items():
