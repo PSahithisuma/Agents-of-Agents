@@ -37,6 +37,22 @@ REDIS_DB       = int(os.getenv("REDIS_DB", "0"))
 
 async def startup(ctx):
     logger.info("[Worker] Starting up — Redis %s:%d", REDIS_HOST, REDIS_PORT)
+    # A restart kills any in-flight job and Arq does not requeue it, so rows still marked
+    # 'running' are orphans. Mark them failed so they stop blocking resubmits (spec cache lookup).
+    try:
+        import asyncpg
+        _url = os.getenv("DATABASE_URL")
+        if _url:
+            _conn = await asyncpg.connect(_url)
+            try:
+                _res = await _conn.execute(
+                    "UPDATE jobs SET status='failed', updated_at=NOW() WHERE status='running'"
+                )
+                logger.warning("[Worker] orphaned running jobs on startup: %s", _res)
+            finally:
+                await _conn.close()
+    except Exception as e:
+        logger.error("[Worker] orphan cleanup skipped: %s", e)
 
 
 async def shutdown(ctx):
