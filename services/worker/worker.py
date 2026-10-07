@@ -43,7 +43,7 @@ async def startup(ctx):
         import asyncpg
         _url = os.getenv("DATABASE_URL")
         if _url:
-            _conn = await asyncpg.connect(_url)
+            _conn = await asyncpg.connect(_url.replace("+asyncpg", ""))
             try:
                 _res = await _conn.execute(
                     "UPDATE jobs SET status='failed', updated_at=NOW() WHERE status='running'"
