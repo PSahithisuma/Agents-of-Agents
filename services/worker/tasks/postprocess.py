@@ -81,12 +81,28 @@ _SQL_TYPES = {
     "LocalDateTime": "TIMESTAMP", "LocalDate": "DATE", "Instant": "TIMESTAMP",
 }
 
+def _strip_nested_classes(code):
+    """Drop nested member classes (a model-added Builder, say) so only the entity's own fields stay."""
+    import re as _re
+    pat = _re.compile(r"\n[ \t]+(?:(?:public|private|protected|static|final)\s+)*class\s+\w+[^{;]*\{")
+    while True:
+        m = pat.search(code)
+        if not m:
+            return code
+        i, depth = m.end(), 1
+        while i < len(code) and depth:
+            depth += (code[i] == "{") - (code[i] == "}")
+            i += 1
+        code = code[:m.start()] + code[i:]
+
+
 def sql_from_entity(code, cfg):
     import re as _re
     table = table_name(cfg["entity"])
     cols = []
     pat = r'(?:@Column\s*\(([^)]*)\)\s*)?private\s+([A-Za-z][A-Za-z0-9_.]*)\s+([a-z][A-Za-z0-9]*)\s*(?:=[^;]*)?;'
-    for m in _re.finditer(pat, code):
+    _body = _strip_nested_classes(code)
+    for m in _re.finditer(pat, _body):
         attrs, jtype, fname = m.group(1) or "", m.group(2), m.group(3)
         jtype = jtype.split(".")[-1]
         nm = _re.search(r'name\s*=\s*"([^"]+)"', attrs)
@@ -111,7 +127,7 @@ def sql_from_entity(code, cfg):
             if "unique = true" in attrs:
                 line += " UNIQUE"
         cols.append(line)
-    _nfields = len(_re.findall(r"private\s+[A-Za-z][A-Za-z0-9_.]*\s+[a-z][A-Za-z0-9]*\s*(?:=[^;]*)?;", code))
+    _nfields = len(_re.findall(r"private\s+[A-Za-z][A-Za-z0-9_.]*\s+[a-z][A-Za-z0-9]*\s*(?:=[^;]*)?;", _body))
     if len(cols) != _nfields:
         return None
     if not any(c.strip().startswith("id ") for c in cols) or len(cols) < 3:
