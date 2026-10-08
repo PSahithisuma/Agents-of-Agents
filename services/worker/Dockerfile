@@ -19,7 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m venv /opt/semgrep && /opt/semgrep/bin/pip install --no-cache-dir "semgrep>=1.90,<2" \
     && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
     && curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
-       | tar -xz -C /usr/local/bin gitleaks
+       | tar -xz -C /usr/local/bin gitleaks \
+    && curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz \
+       | tar -xz -C /usr/local/bin trivy \
+    && mkdir -p /opt/trivy-cache
 
 # Worker application code
 COPY services/worker/ .
