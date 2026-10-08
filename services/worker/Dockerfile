@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Build context = project root; requirements are in services/worker/
@@ -14,6 +14,12 @@ ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH=/opt/java/openjdk/bin:/usr/share/maven/bin:$PATH
 COPY services/worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Security scan tools: Semgrep in its own venv (no clash with pinned libs) and the gitleaks binary
+RUN python -m venv /opt/semgrep && /opt/semgrep/bin/pip install --no-cache-dir "semgrep>=1.90,<2" \
+    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
+    && curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+       | tar -xz -C /usr/local/bin gitleaks
 
 # Worker application code
 COPY services/worker/ .

@@ -1129,6 +1129,15 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         else:
             gate_note = "; BOOT CHECK FAILED after 3 rounds, repo may not start"
     _skip_note = (f" (skipped: {', '.join(skipped_entities)})" if skipped_entities else "") + gate_note
+    # --- SECURITY SCAN v1 (non-blocking): secrets, code issues, SBOM ---
+    try:
+        from tasks.security_scan import run_security_scan
+        await pub(79, "security", "Running security scan (secrets, code, SBOM)...")
+        _sec_files, _sec_note = await run_security_scan(files, job_id)
+        files.update(_sec_files)
+        _skip_note += _sec_note
+    except Exception as _se:
+        logger.error(f"security scan crashed: {_se}")
 
     for path, content in files.items():
         full_path = f"{out_dir}/{path}"
