@@ -1060,6 +1060,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         _s = _sfe(_code, _cfg)
         if not _s:
             logger.warning(f"{_ename}: no SQL could be derived from the entity, dropping it")
+            logger.warning(f"{_ename} dropped source (no SQL):\n{_code[:6000]}")
             for _k in (f"src/main/java/{_pp}/entity/{_ename}.java", f"src/main/java/{_pp}/repository/{_ename}Repository.java",
                        f"src/main/java/{_pp}/service/{_ename}Service.java", f"src/main/java/{_pp}/controller/{_ename}Controller.java",
                        f"src/test/java/{_pp}/{_ename}ServiceTest.java"):
@@ -1087,6 +1088,8 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         if not _drop:
             gate_note = "; COMPILE CHECK FAILED in shared files, repo may not build"
             break
+        for en in _drop:
+            logger.warning(f"{en} dropped source (compile gate):\n{files.get(f'src/main/java/{_pp}/entity/{en}.java', '')[:6000]}")
         for en in _drop:
             for k in (f"src/main/java/{_pp}/entity/{en}.java", f"src/main/java/{_pp}/repository/{en}Repository.java",
                       f"src/main/java/{_pp}/service/{en}Service.java", f"src/main/java/{_pp}/controller/{en}Controller.java",

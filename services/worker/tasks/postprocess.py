@@ -257,8 +257,13 @@ def ensure_imports(code):
 # --- tenantId safety net -------------------------------------------------------------------------
 # Generated repositories declare findByIdAndTenantId(...), so EVERY entity must have a tenantId property;
 # otherwise Spring Data fails at startup. The model sometimes omits it, so guarantee it here.
+def _has_field(code, name):
+    """True only if the class declares a field called `name`, not if the word merely appears in a method or comment."""
+    return bool(re.search(r"\b(?:private|protected|public)\s+(?:final\s+)?[\w.<>\[\],? ]+?\s+" + name + r"\s*(?:;|=)", code))
+
+
 def ensure_tenant_field(code):
-    if re.search(r"\btenantId\b", code):
+    if _has_field(code, "tenantId"):
         return code
     m = re.search(r"public\s+class\s+\w+[^{]*\{", code)
     if not m:
@@ -279,9 +284,9 @@ def postprocess_entity(code, cfg):
 # so every entity must have createdAt (and updatedAt, which the persist hooks set). Guarantee both.
 def ensure_audit_fields(code):
     add = ""
-    if not re.search(r"\bcreatedAt\b", code):
+    if not _has_field(code, "createdAt"):
         add += '\n    @Column(name = "created_at")\n    private LocalDateTime createdAt;\n'
-    if not re.search(r"\bupdatedAt\b", code):
+    if not _has_field(code, "updatedAt"):
         add += '\n    @Column(name = "updated_at")\n    private LocalDateTime updatedAt;\n'
     if not add:
         return code
@@ -302,16 +307,18 @@ def postprocess_entity(code, cfg):
 # The persist hooks and SQL builder assume LocalDateTime. If the model used java.util.Date (or Timestamp),
 # normalise the whole entity (fields, getters, setters) so the code compiles and Hibernate maps it.
 def normalize_dates(code):
-    if not re.search(r"\b(java\.util\.)?Date\b|\bTimestamp\b", code):
+    if not re.search(r"\b(java\.util\.)?Date\b|\bTimestamp\b|\b(java\.time\.)?Instant\b", code):
         return code
     code = re.sub(r"new\s+(java\.util\.)?Date\s*\(\s*\)", "LocalDateTime.now()", code)
     code = re.sub(r"^\s*@Temporal\s*\([^)]*\)[ \t]*\n", "", code, flags=re.M)
     code = re.sub(r"^import\s+java\.util\.Date;[ \t]*\n", "", code, flags=re.M)
     code = re.sub(r"^import\s+java\.sql\.Timestamp;[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r"^import\s+java\.time\.Instant;[ \t]*\n", "", code, flags=re.M)
     parts = re.split(r'("(?:\\.|[^"\\])*")', code)
     for i in range(0, len(parts), 2):
         parts[i] = re.sub(r"\b(java\.util\.)?Date\b", "LocalDateTime", parts[i])
         parts[i] = re.sub(r"\b(java\.sql\.)?Timestamp\b", "LocalDateTime", parts[i])
+        parts[i] = re.sub(r"\b(java\.time\.)?Instant\b", "LocalDateTime", parts[i])
     code = "".join(parts)
     if "import java.time.LocalDateTime;" not in code:
         m = re.search(r"^package\s+[^;]+;[ \t]*\n", code, flags=re.M)
