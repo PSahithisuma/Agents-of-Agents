@@ -368,7 +368,6 @@ def generate_service(cfg):
 import {pkg}.entity.{entity};
 import {pkg}.repository.{entity}Repository;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
@@ -381,9 +380,10 @@ import java.util.UUID;
  */
 @Service
 @RequiredArgsConstructor
-@Slf4j
 @Transactional
 public class {entity}Service {{
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger({entity}Service.class);
 
     private final {entity}Repository repository;
 
