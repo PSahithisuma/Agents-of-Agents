@@ -187,9 +187,12 @@ async def _call_groq_once(prompt, max_tokens=3000):
             headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
             json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
         )
-        if resp.status_code == 429 and "Request too large" not in resp.text:
-            logger.warning("Rate limited, waiting 35s...")
-            await asyncio.sleep(35)
+        for _w in range(2):
+            if resp.status_code != 429:
+                break
+            _wait = 65 if "Request too large" in resp.text else 35
+            logger.warning(f"Rate limited, waiting {_wait}s (retry {_w + 1}/2)...")
+            await asyncio.sleep(_wait)
             resp = await client.post(
                 LLM_URL,
                 headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
@@ -214,7 +217,7 @@ async def call_groq(prompt, max_tokens=3000):
     if _LLM_BREAKER["until"] > _t.time():
         raise RuntimeError("LLM circuit open: model endpoint failing, retry shortly")
     try:
-        out = await asyncio.wait_for(_call_groq_once(prompt, max_tokens), timeout=180)
+        out = await asyncio.wait_for(_call_groq_once(prompt, max_tokens), timeout=300)
     except Exception as e:
         msg = str(e) or type(e).__name__
         if "Groq error 429" not in msg and "truncated" not in msg:
