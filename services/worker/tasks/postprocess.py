@@ -296,3 +296,32 @@ _postprocess_entity_before_audit = postprocess_entity
 
 def postprocess_entity(code, cfg):
     return _postprocess_entity_before_audit(ensure_audit_fields(code), cfg)
+
+
+# --- java.util.Date -> LocalDateTime -------------------------------------------------------------------------
+# The persist hooks and SQL builder assume LocalDateTime. If the model used java.util.Date (or Timestamp),
+# normalise the whole entity (fields, getters, setters) so the code compiles and Hibernate maps it.
+def normalize_dates(code):
+    if not re.search(r"\b(java\.util\.)?Date\b|\bTimestamp\b", code):
+        return code
+    code = re.sub(r"new\s+(java\.util\.)?Date\s*\(\s*\)", "LocalDateTime.now()", code)
+    code = re.sub(r"^\s*@Temporal\s*\([^)]*\)[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r"^import\s+java\.util\.Date;[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r"^import\s+java\.sql\.Timestamp;[ \t]*\n", "", code, flags=re.M)
+    parts = re.split(r'("(?:\\.|[^"\\])*")', code)
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r"\b(java\.util\.)?Date\b", "LocalDateTime", parts[i])
+        parts[i] = re.sub(r"\b(java\.sql\.)?Timestamp\b", "LocalDateTime", parts[i])
+    code = "".join(parts)
+    if "import java.time.LocalDateTime;" not in code:
+        m = re.search(r"^package\s+[^;]+;[ \t]*\n", code, flags=re.M)
+        if m:
+            code = code[:m.end()] + "import java.time.LocalDateTime;\n" + code[m.end():]
+    return code
+
+
+_postprocess_entity_before_dates = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    return _postprocess_entity_before_dates(normalize_dates(code), cfg)
