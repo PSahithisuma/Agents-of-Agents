@@ -21,6 +21,13 @@ from core.metrics import SPEC_COMPILED, SPEC_COMPILE_DURATION
 from domain_packs.v0.compiler import compile_spec
 from domain_packs.v0.options import OPTION_GRAPH
 
+async def require_writer(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """Edit / lock / generate need the admin or developer role; viewers are read-only."""
+    if not ({"admin", "developer"} & set(user.roles or [])):
+        raise HTTPException(status_code=403, detail="requires admin or developer role")
+    return user
+
+
 router = APIRouter(prefix="/api/v1/projects", tags=["specs"])
 
 
@@ -280,7 +287,7 @@ _SPEC_COLS = "id, project_id, tenant_id, version, canonical_hash, frozen_at, spe
     summary="Replace the extra entities of a DRAFT spec (validated); recomputes the canonical hash",
 )
 async def edit_spec_entities(project_id: UUID, version: int, body: EntitiesEdit,
-                             user: AuthUser = Depends(get_current_user)) -> SpecOut:
+                             user: AuthUser = Depends(require_writer)) -> SpecOut:
     try:
         entities = validate_entities(body.entities)
     except ValueError as exc:
@@ -321,7 +328,7 @@ async def edit_spec_entities(project_id: UUID, version: int, body: EntitiesEdit,
     response_model=SpecOut,
     summary="Lock a draft spec (sets frozen_at). A locked spec is immutable.",
 )
-async def lock_spec(project_id: UUID, version: int, user: AuthUser = Depends(get_current_user)) -> SpecOut:
+async def lock_spec(project_id: UUID, version: int, user: AuthUser = Depends(require_writer)) -> SpecOut:
     async with get_tenant_session(user.tenant_id) as session:
         row = (await session.execute(
             text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),
@@ -361,7 +368,7 @@ class SpecGenerateOut(BaseModel):
     summary="Generate from a LOCKED spec version (no recompilation)",
 )
 async def generate_from_spec(project_id: UUID, version: int, request: Request,
-                             user: AuthUser = Depends(get_current_user)) -> SpecGenerateOut:
+                             user: AuthUser = Depends(require_writer)) -> SpecGenerateOut:
     base_url = str(request.base_url).rstrip("/")
     async with get_tenant_session(user.tenant_id) as session:
         row = (await session.execute(
