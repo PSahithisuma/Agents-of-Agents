@@ -6,6 +6,7 @@ GET  /api/v1/projects/{id}/specs     → list all spec versions for a project
 GET  /api/v1/projects/{id}/specs/{v} → get a specific version (with canonical_hash)
 """
 from __future__ import annotations
+import os
 
 import time
 from typing import Optional
@@ -369,7 +370,7 @@ class SpecGenerateOut(BaseModel):
 )
 async def generate_from_spec(project_id: UUID, version: int, request: Request,
                              user: AuthUser = Depends(require_writer)) -> SpecGenerateOut:
-    base_url = str(request.base_url).rstrip("/")
+    base_url = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
     async with get_tenant_session(user.tenant_id) as session:
         row = (await session.execute(
             text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),

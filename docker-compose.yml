@@ -91,6 +91,7 @@ services:
       <<: [*db-env, *redis-env, *llm-env]
       PORT: "8080"
       API_ENV: production
+      PUBLIC_BASE_URL: https://agents-of-agents.duckdns.org
       CAPACITY_URL: http://capacity:8080
     depends_on:
       postgres:

@@ -303,7 +303,7 @@ async def enqueue_generation(
 
         if cached:
             JOBS_CACHE_HITS.labels(tenant_id=str(user.tenant_id)).inc()
-            base_url = str(request.base_url).rstrip("/")
+            base_url = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
             return GenerateOut(
                 job_id=cached["job_id"],
                 project_id=project_id,
@@ -373,7 +373,7 @@ async def enqueue_generation(
 
     JOBS_ENQUEUED.labels(job_type="generation").inc()
 
-    base_url = str(request.base_url).rstrip("/")
+    base_url = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
     return GenerateOut(
         job_id=job_id,
         project_id=project_id,
