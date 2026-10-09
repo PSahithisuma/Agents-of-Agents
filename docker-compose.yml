@@ -164,13 +164,38 @@ services:
     ports:
       - "127.0.0.1:8003:8080"
     environment:
-      <<: *db-env
       PORT: "8080"
-      PROJECT_ID: oracle-vibeforge
-      REGION: us-east
+      DOCKER_HOST: tcp://dockerproxy:2375
+      GITEA_URL: http://gitea:3000
+      GITEA_TOKEN: ${GITEA_TOKEN}
+      GITEA_OWNER: vibeforge-admin
+      PUBLIC_BASE_URL: https://agents-of-agents.duckdns.org
+      SANDBOX_TTL_SECONDS: "1800"
+      SANDBOX_MAX_PREVIEWS: "2"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - dockerproxy
+    volumes:
+      - sandbox_data:/data
+    networks: [vibeforge]
+
+  dockerproxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      BUILD: "1"
+      POST: "1"
+      EXEC: "0"
+      VOLUMES: "0"
+      SERVICES: "0"
+      SWARM: "0"
+      SECRETS: "0"
+      INFO: "0"
+      AUTH: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [vibeforge]
 
   ingestion:
@@ -345,3 +370,4 @@ volumes:
   verdaccio_data:
   devpi_data:
   artifacts:
+  sandbox_data:

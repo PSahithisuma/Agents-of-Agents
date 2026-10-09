@@ -1183,6 +1183,16 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea. Repo may be incomplete: {gitea_url}")
         return {"status": "failed", "pack": pack, "files": pushed, "expected": len(files), "gitea_url": gitea_url}
     await db_mark_done(tenant_id, job_id, "completed", gitea_url)
+    _pv_url, _pv_msg = None, ""
+    try:
+        await pub(97, "preview", "Starting live preview (about 2 minutes)...")
+        _pv_url, _pv_msg = await _sandbox_preview(job_id, tenant_id, repo_name)
+    except Exception as _pe:
+        logger.error(f"preview step crashed: {_pe}")
+    if _pv_url:
+        _skip_note += f"; live preview (30 min): {_pv_url}"
+    elif _pv_msg:
+        _skip_note += f"; preview {_pv_msg}"
     await pub(100, "complete", f"Done — {pushed} files pushed, {len(gen_entities)} entities generated{_skip_note}. {cfg['compliance']}-aligned template, not a compliance certification. Repo: {gitea_url}")
     return {"status": "completed", "pack": pack, "tables": cfg["tables"], "files": pushed, "gitea_url": gitea_url}
 
@@ -1237,3 +1247,29 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
             await _record_llm_usage(ctx, tenant_id, job_id, usage)
         except Exception as e:  # never let bookkeeping fail the job
             logger.error(f"llm usage recording failed for job {job_id}: {e}")
+
+
+# --- Live preview via sandbox service (non-blocking; failures only noted in the message) ---
+async def _sandbox_preview(job_id, tenant_id, repo_name, wait_s=300):
+    import time as _t
+    base = os.environ.get("SANDBOX_URL", "http://sandbox:8080").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{base}/run", json={"job_id": str(job_id), "tenant_id": str(tenant_id), "repo": repo_name})
+            if r.status_code >= 300:
+                return None, f"not started (HTTP {r.status_code})"
+            deadline = _t.time() + wait_s
+            await asyncio.sleep(20)
+            while _t.time() < deadline:
+                rr = await c.get(f"{base}/report/{job_id}")
+                if rr.status_code == 200:
+                    rep = rr.json()
+                    if rep.get("overall") == "pass" and rep.get("preview_url"):
+                        return rep["preview_url"], ""
+                    if rep.get("overall") == "fail":
+                        bad = [s["name"] for s in rep.get("steps", []) if not s.get("passed")]
+                        return None, "failed at " + (", ".join(bad) or "unknown step")
+                await asyncio.sleep(10)
+    except Exception as e:
+        return None, f"error ({str(e)[:80]})"
+    return None, "timed out"
