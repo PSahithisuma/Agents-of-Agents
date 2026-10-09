@@ -28,6 +28,7 @@ from pathlib import Path
 
 import asyncpg
 from google.cloud import storage as gcs_storage
+from minio import Minio
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from qdrant_client import QdrantClient
 from qdrant_client import models as qm

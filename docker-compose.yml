@@ -198,20 +198,37 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [vibeforge]
 
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    user: "0:0"
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    networks: [vibeforge]
+
   ingestion:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
     restart: unless-stopped
     ports:
-      - "8004:8080"
+      - "127.0.0.1:8004:8080"
     environment:
       <<: *redis-env
       PORT: "8080"
       QDRANT_URL: http://qdrant:6333
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
     networks: [vibeforge]
 
   retrieval:
@@ -220,7 +237,7 @@ services:
       dockerfile: services/retrieval/Dockerfile
     restart: unless-stopped
     ports:
-      - "8005:8080"
+      - "127.0.0.1:8005:8080"
     environment:
       <<: *redis-env
       PORT: "8080"
@@ -371,3 +388,4 @@ volumes:
   devpi_data:
   artifacts:
   sandbox_data:
+  minio_data:

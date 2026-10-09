@@ -25,6 +25,8 @@ from FlagEmbedding import BGEM3FlagModel; \
 BGEM3FlagModel('BAAI/bge-m3', use_fp16=True); \
 print('bge-m3 cached')" || echo "bge-m3 pre-download skipped (non-fatal)"
 
+RUN uv pip install --system --no-cache minio
+
 COPY services/ingestion/ .
 
 # PORT env var is set by Cloud Run — use it for the metrics/health port
