@@ -332,3 +332,26 @@ _postprocess_entity_before_dates = postprocess_entity
 
 def postprocess_entity(code, cfg):
     return _postprocess_entity_before_dates(normalize_dates(code), cfg)
+
+
+
+def fix_uuid_generator(code):
+    """Models often use @GenericGenerator without importing it. Use the standard JPA 3.1 UUID strategy instead."""
+    if "GenericGenerator" not in code:
+        return code
+    code = re.sub(r"^[ \t]*@GenericGenerator\s*\(.*?\)[ \t]*\n", "", code, flags=re.M | re.S)
+    code = re.sub(r"^import\s+org\.hibernate\.annotations\.GenericGenerator;[ \t]*\n", "", code, flags=re.M)
+    code = re.sub(r"@GeneratedValue\s*\([^)]*generator[^)]*\)", "@GeneratedValue(strategy = GenerationType.UUID)", code)
+    code = re.sub(r"@GeneratedValue(?!\s*\()", "@GeneratedValue(strategy = GenerationType.UUID)", code)
+    if "GenerationType" in code and "import jakarta.persistence.*;" not in code and "import jakarta.persistence.GenerationType;" not in code:
+        m = re.search(r"^package\s+[^;]+;[ \t]*\n", code, flags=re.M)
+        if m:
+            code = code[:m.end()] + "import jakarta.persistence.GenerationType;\n" + code[m.end():]
+    return code
+
+
+_postprocess_entity_before_uuid = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    return _postprocess_entity_before_uuid(fix_uuid_generator(code), cfg)
