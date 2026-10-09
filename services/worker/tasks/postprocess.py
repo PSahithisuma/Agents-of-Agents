@@ -355,3 +355,25 @@ _postprocess_entity_before_uuid = postprocess_entity
 
 def postprocess_entity(code, cfg):
     return _postprocess_entity_before_uuid(fix_uuid_generator(code), cfg)
+
+
+def fix_string_id(code):
+    """If the entity id is a String but the id is generated as UUID, make it a real UUID
+    so it matches JpaRepository<Entity, UUID> and derived queries like findByIdAndTenantId(UUID, ..)."""
+    import re as _re
+    if not _re.search(r"private\s+String\s+id\s*;", code):
+        return code
+    code = _re.sub(r"private\s+String\s+id\s*;", "private UUID id;", code)
+    code = _re.sub(r"public\s+String\s+getId\s*\(\s*\)", "public UUID getId()", code)
+    code = _re.sub(r"public\s+void\s+setId\s*\(\s*String\s+id\s*\)", "public void setId(UUID id)", code)
+    if "import java.util.UUID;" not in code:
+        code = _re.sub(r"(package\s+[\w.]+;\s*)", r"\1\nimport java.util.UUID;\n", code, count=1)
+    return code
+
+
+_postprocess_entity_before_stringid = postprocess_entity
+
+
+def postprocess_entity(code, cfg):
+    code = _postprocess_entity_before_stringid(code, cfg)
+    return fix_string_id(code)

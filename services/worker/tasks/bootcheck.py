@@ -155,11 +155,17 @@ async def run_boot_check(files, job_id, startup_timeout=120):
             if proc.returncode is not None:
                 break
             await asyncio.sleep(1)
+        if not started:
+            try:
+                await asyncio.wait_for(asyncio.shield(pump), timeout=5)
+            except Exception:
+                pass
         log_text = "".join(lines)
         if not started:
             res["status"] = "fail"
             res["bad"] = parse_failure(log_text, entities)
-            logger.error(f"boot check: app did not start; bad={res['bad']}; tail: {log_text[-900:]}")
+            causes = " || ".join(l.strip()[:300] for l in lines if any(k in l for k in ("Caused by", "Description:", "Schema-validation", "Unable to", "APPLICATION FAILED")))[:2500]
+            logger.error(f"boot check: app did not start; bad={res['bad']}; causes: {causes}; tail: {log_text[-900:]}")
             return res
 
         async with httpx.AsyncClient(timeout=20) as c:
