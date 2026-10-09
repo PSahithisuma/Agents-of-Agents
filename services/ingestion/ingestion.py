@@ -358,7 +358,7 @@ async def main() -> None:
     logger.info("Loading BAAI/bge-m3 model (may take a few minutes on first run)…")
     from FlagEmbedding import BGEM3FlagModel  # noqa: PLC0415
 
-    model = BGEM3FlagModel("BAAI/bge-m3", use_fp16=True)
+    model = BGEM3FlagModel(os.environ.get("BGE_M3_PATH", "BAAI/bge-m3"), use_fp16=True)
     logger.info("bge-m3 model loaded ✓")
 
     # Connect to MinIO

@@ -12,22 +12,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv — uses PubGrub resolver (no backtracking depth limit).
+# Models live in the shared hf_models volume (mounted at /models), never in the image
+ENV HF_HOME=/models HF_HUB_OFFLINE=1
+
 RUN pip install --quiet uv
+
+# CPU-only PyTorch first (no multi-GB NVIDIA libraries)
+RUN uv pip install --system --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 COPY services/ingestion/requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
-
-# Pre-download bge-m3 so cold start is fast
-RUN python -c "\
-import os; os.environ['HF_HOME']='/app/hf_cache'; \
-from FlagEmbedding import BGEM3FlagModel; \
-BGEM3FlagModel('BAAI/bge-m3', use_fp16=True); \
-print('bge-m3 cached')" || echo "bge-m3 pre-download skipped (non-fatal)"
-
 RUN uv pip install --system --no-cache minio
 
 COPY services/ingestion/ .
 
-# PORT env var is set by Cloud Run — use it for the metrics/health port
 CMD ["sh", "-c", "INGESTION_METRICS_PORT=${PORT:-9001} python ingestion.py"]

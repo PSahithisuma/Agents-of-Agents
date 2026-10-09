@@ -37,9 +37,9 @@ class RetrievalService:
         if QDRANT_API_KEY: kw["api_key"] = QDRANT_API_KEY
         self.qdrant  = QdrantClient(**kw)
         logger.info("[Retrieval] Connecting Qdrant at %s", qdrant_url)
-        self.encoder = BGEM3FlagModel("BAAI/bge-m3", use_fp16=True)
+        self.encoder = BGEM3FlagModel(os.environ.get("BGE_M3_PATH", "BAAI/bge-m3"), use_fp16=True)
         logger.info("[Retrieval] bge-m3 loaded")
-        self.reranker = FlagReranker("BAAI/bge-reranker-v2-m3", use_fp16=True)
+        self.reranker = FlagReranker(os.environ.get("RERANKER_PATH", "BAAI/bge-reranker-v2-m3"), use_fp16=True)
         logger.info("[Retrieval] bge-reranker loaded")
 
     def _embed(self, q: str) -> list[float]:
@@ -53,7 +53,7 @@ class RetrievalService:
             filt = None
             if tenant_id and not shared:
                 filt = qm.Filter(must=[qm.FieldCondition(key="tenant_id", match=qm.MatchValue(value=tenant_id))])
-            hits = self.qdrant.search(collection_name=col, query_vector=vec, query_filter=filt, limit=limit, with_payload=True)
+            hits = self.qdrant.query_points(collection_name=col, query=vec, query_filter=filt, limit=limit, with_payload=True).points
             return [{"chunk_id": str(h.id), "text": h.payload.get("text",""), "source_name": h.payload.get("filename","?"),
                      "source_version": h.payload.get("doc_id",""), "heading": h.payload.get("heading",""),
                      "score": h.score, "is_shared": shared} for h in hits]

@@ -7,20 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Use the correct requirements.txt (repo-root build context)
+# Models live in the shared hf_models volume (mounted at /models), never in the image
+ENV HF_HOME=/models HF_HUB_OFFLINE=1
+
+# CPU-only PyTorch (no multi-GB NVIDIA libraries)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 COPY services/retrieval/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download bge-m3 and bge-reranker during build so cold start is fast
-RUN HF_HOME=/app/hf_cache python -c "\
-from FlagEmbedding import BGEM3FlagModel; \
-BGEM3FlagModel('BAAI/bge-m3', use_fp16=True); \
-from FlagEmbedding import FlagReranker; \
-FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True); \
-print('Models cached')" || echo "model pre-download skipped"
-
-# Copy only the retrieval service files
 COPY services/retrieval/ .
 
-# Respect Cloud Run PORT env var (defaults to 8001 locally)
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8001}"]
