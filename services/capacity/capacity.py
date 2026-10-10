@@ -112,6 +112,25 @@ async def _try_acquire(slot_type: str) -> bool:
             except aioredis.WatchError:
                 continue   # retry on concurrent modification
 
+async def _reconcile(slot_type: str) -> None:
+    """Give back slots held by jobs that already finished (worker crashed or was rebuilt)."""
+    live = 0
+    async for key in redis_client.scan_iter(match=f"capacity:active:{slot_type}:*"):
+        jid = key.split(":", 3)[-1]
+        try:
+            st = await pool.fetchval("SELECT status FROM jobs WHERE id::text = $1", jid)
+        except Exception:
+            st = None
+        if st in ("completed", "failed", "cancelled", "canceled", "error"):
+            await redis_client.delete(key)
+        else:
+            live += 1
+    ckey = f"capacity:{slot_type}:used"
+    cur = int(await redis_client.get(ckey) or 0)
+    if cur > live:
+        await redis_client.set(ckey, live)
+
+
 async def _release(slot_type: str) -> None:
     """Release a slot. Never goes below zero."""
     key = f"capacity:{slot_type}:used"
@@ -140,13 +159,17 @@ async def acquire_slot(req: SlotRequest):
     """
     # Check per-tenant queue position
     queue_key = f"capacity:queue:{req.slot_type}:{req.tenant_id}"
+    _already = await redis_client.lpos(queue_key, req.job_id) is not None
 
     if req.is_retry:
         # Retries go to BACK of queue â€” Contract C13
-        await redis_client.rpush(queue_key, req.job_id)
+        if not _already:
+            await redis_client.rpush(queue_key, req.job_id)
     else:
-        await redis_client.lpush(queue_key, req.job_id)
+        if not _already:
+            await redis_client.lpush(queue_key, req.job_id)
 
+    await _reconcile(req.slot_type)
     # Try to get global slot
     granted = await _try_acquire(req.slot_type)
 
@@ -157,7 +180,7 @@ async def acquire_slot(req: SlotRequest):
         await redis_client.set(
             f"capacity:active:{req.slot_type}:{req.job_id}",
             "1",
-            ex=1800
+            ex=3600
         )
         return SlotResponse(granted=True, position=0, wait_ms=0)
     else:

@@ -153,6 +153,7 @@ services:
       <<: [*db-env, *redis-env]
       DATABASE_URL: postgresql://vibeforge:${POSTGRES_PASSWORD}@postgres:5432/vibeforge
       PORT: "8080"
+      LITELLM_MAX_PARALLEL: "1"
     depends_on:
       postgres:
         condition: service_healthy
