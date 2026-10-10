@@ -377,3 +377,28 @@ _postprocess_entity_before_stringid = postprocess_entity
 def postprocess_entity(code, cfg):
     code = _postprocess_entity_before_stringid(code, cfg)
     return fix_string_id(code)
+
+
+import re as _re_gv
+
+
+def fix_generated_value(code):
+    """Model sometimes writes @GeneratedValue(...uuid()...), which does not exist; use GenerationType.UUID."""
+    def _sub(m):
+        if "uuid" in m.group(0).lower():
+            return "@GeneratedValue(strategy = GenerationType.UUID)"
+        return m.group(0)
+    out = _re_gv.sub(r"@GeneratedValue\s*\((?:[^()]|\(\))*\)", _sub, code)
+    if ("GenerationType.UUID" in out
+            and "import jakarta.persistence.*;" not in out
+            and "import jakarta.persistence.GenerationType;" not in out):
+        out = _re_gv.sub(r"(package [^;]+;\s*)", r"\1\nimport jakarta.persistence.GenerationType;\n", out, count=1)
+    return out
+
+
+_postprocess_entity_before_genval = postprocess_entity
+
+
+def postprocess_entity(*args, **kwargs):
+    res = _postprocess_entity_before_genval(*args, **kwargs)
+    return fix_generated_value(res) if isinstance(res, str) else res
