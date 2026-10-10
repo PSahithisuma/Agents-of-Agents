@@ -402,3 +402,43 @@ _postprocess_entity_before_genval = postprocess_entity
 def postprocess_entity(*args, **kwargs):
     res = _postprocess_entity_before_genval(*args, **kwargs)
     return fix_generated_value(res) if isinstance(res, str) else res
+
+
+_TIME_NOW_RE = _re_gv.compile(r"\b(LocalDateTime|LocalDate|LocalTime|Instant|OffsetDateTime|ZonedDateTime|Year|YearMonth)\.Now\s*\(")
+
+
+def fix_time_now(code):
+    """Model sometimes writes LocalDateTime.Now(); the method is now()."""
+    return _TIME_NOW_RE.sub(lambda m: m.group(1) + ".now(", code)
+
+
+_postprocess_entity_before_timenow = postprocess_entity
+
+
+def postprocess_entity(*args, **kwargs):
+    res = _postprocess_entity_before_timenow(*args, **kwargs)
+    return fix_time_now(res) if isinstance(res, str) else res
+
+
+def fix_enumerated_string(code):
+    """@Enumerated on a String field makes Hibernate fail at startup; drop the annotation."""
+    code = _re_gv.sub(r"@Enumerated(?:\([^)]*\))?[ \t]*(?=private\s+String\b)", "", code)
+    lines = code.split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        if line.strip().startswith("@Enumerated"):
+            j = i + 1
+            while j < len(lines) and lines[j].strip().startswith("@"):
+                j += 1
+            if j < len(lines) and _re_gv.match(r"\s*private\s+String\b", lines[j]):
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_postprocess_entity_before_enumstr = postprocess_entity
+
+
+def postprocess_entity(*args, **kwargs):
+    res = _postprocess_entity_before_enumstr(*args, **kwargs)
+    return fix_enumerated_string(res) if isinstance(res, str) else res
