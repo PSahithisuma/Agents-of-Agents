@@ -57,6 +57,7 @@ async def _compile_check(files, job_id):
     if proc.returncode == 0:
         return {"status": "ok", "bad": set()}
     bad = set(re.findall(r"\[ERROR\][^\n]*?/([A-Za-z0-9_]+)\.java:\[", text))
+    _LAST_COMPILE_OUT[str(job_id)] = text
     logger.error(f"compile gate failed for {job_id}: {text[-1200:]}")
     return {"status": "fail", "bad": bad}
 
@@ -1078,7 +1079,8 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     # --- COMPILE GATE: drop entities that do not compile, say so in the status ---
     await pub(75, "qa_gate", "Compiling generated project (Maven)...")
     gate_note = ""
-    for _round in range(3):
+    _fix_tried = set()
+    for _round in range(4):
         _res = await _compile_check(files, job_id)
         await _save_gate("compile", _round + 1, _res, tenant_id, job_id)
         if _res["status"] == "ok":
@@ -1092,6 +1094,18 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         if not _drop:
             gate_note = "; COMPILE CHECK FAILED in shared files, repo may not build"
             break
+        _tofix = [en for en in _drop if en not in _fix_tried]
+        if _tofix:
+            _mvn_out = _LAST_COMPILE_OUT.get(str(job_id), "")
+            _fixed_any = False
+            for en in _tofix:
+                _fix_tried.add(en)
+                if await _fix_entity_files(files, en, cfg, _pp, _ent_sql, _mvn_out):
+                    _fixed_any = True
+            if _fixed_any:
+                files[_sql_key] = _base_sql + "".join("\n\n" + _ent_sql[e] for e in gen_entities if e in _ent_sql)
+                logger.warning(f"compile gate round {_round + 1}: asked the model to fix {_tofix}")
+                continue
         for en in _drop:
             logger.warning(f"{en} dropped source (compile gate):\n{files.get(f'src/main/java/{_pp}/entity/{en}.java', '')[:6000]}")
         for en in _drop:
@@ -1396,3 +1410,45 @@ async def _save_gate(kind, rnd, res, tenant_id, job_id):
         await db_gate_report(tenant_id, job_id, n, dict(res).get("status") == "ok", report)
     except Exception as e:
         logger.warning(f"[{job_id}] gate report not saved: {e}")
+
+
+_LAST_COMPILE_OUT = {}
+
+
+async def _fix_entity_files(files, en, cfg, pp, ent_sql, mvn_out):
+    # Fixer (C5): regenerate ONE failing entity with the real compiler errors in the prompt.
+    # Returns True if the entity files were replaced; False means "leave it, it will be dropped".
+    try:
+        import re as _re2
+        from tasks.postprocess import postprocess_entity as _ppe, sql_from_entity as _sfe2
+        key = f"src/main/java/{pp}/entity/{en}.java"
+        old = files.get(key)
+        if not old:
+            return False
+        errs = [ln for ln in mvn_out.splitlines()
+                if "[ERROR]" in ln and _re2.search(r"/" + en + r"(Repository|Service|Controller|ServiceTest)?\.java", ln)]
+        err_text = "\n".join(errs)[:1500]
+        if not err_text:
+            return False
+        prompt = (f"This Java Spring Boot JPA @Entity class {en} fails to compile.\nCompiler errors:\n{err_text}\n\n"
+                  f"Current code:\n{old[:6000]}\n\n"
+                  f"Fix the errors. Keep package {cfg['package']}.entity and the same fields. "
+                  f"Define or import anything that is missing. Return only the full corrected Java class.")
+        new = strip_fences(await call_groq(prompt, max_tokens=1800))
+        cfg2 = {**cfg, "entity": en, "has_status": True}
+        new = _ppe(new, cfg2)
+        new = _clean_entity(new, en)
+        cfg2["has_status"] = bool(_re2.search(r"\bstatus\b", new))
+        sql = _sfe2(new, cfg2)
+        if not sql:
+            return False
+        files[key] = new
+        files[f"src/main/java/{pp}/repository/{en}Repository.java"] = generate_repository(cfg2)
+        files[f"src/main/java/{pp}/service/{en}Service.java"] = generate_service(cfg2)
+        files[f"src/main/java/{pp}/controller/{en}Controller.java"] = generate_controller(cfg2)
+        files[f"src/test/java/{pp}/{en}ServiceTest.java"] = generate_junit_test(cfg2)
+        ent_sql[en] = sql
+        return True
+    except Exception as e:
+        logger.warning(f"fixer failed for {en}: {e}")
+        return False
