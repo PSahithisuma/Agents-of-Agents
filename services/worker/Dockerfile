@@ -12,6 +12,9 @@ COPY --from=eclipse-temurin:21-jdk /opt/java/openjdk /opt/java/openjdk
 COPY --from=maven:3.9-eclipse-temurin-21 /usr/share/maven /usr/share/maven
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH=/opt/java/openjdk/bin:/usr/share/maven/bin:$PATH
+COPY --from=mcr.microsoft.com/dotnet/sdk:8.0 /usr/share/dotnet /usr/share/dotnet
+ENV PATH=$PATH:/usr/share/dotnet DOTNET_ROOT=/usr/share/dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 NUGET_PACKAGES=/opt/nuget-cache
+RUN mkdir -p /opt/nuget-cache && chmod 777 /opt/nuget-cache
 COPY services/worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

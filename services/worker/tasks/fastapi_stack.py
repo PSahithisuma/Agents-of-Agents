@@ -177,3 +177,6 @@ async def run_gate(files, job_id, py=GATE_PY):
         return {"compile": comp, "tests": tests}
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+DESC = "FastAPI + SQLAlchemy + pydantic"
+GATE_DESC = "compileall + pytest (isolated venv)"

@@ -15,6 +15,21 @@ from minio import Minio
 
 from core.auth import AuthUser, get_current_user
 from routers.specs import require_writer
+from core.breaker import Breaker
+
+_BRK = Breaker('minio')
+
+
+async def _guarded(fn):
+    if _BRK.is_open:
+        raise HTTPException(status_code=503, detail='Document storage is temporarily unavailable', headers={'Retry-After': str(_BRK.retry_after())})
+    try:
+        out = await asyncio.to_thread(fn)
+    except Exception:
+        _BRK.fail()
+        raise HTTPException(status_code=503, detail='Document storage is temporarily unavailable', headers={'Retry-After': '30'})
+    _BRK.ok()
+    return out
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
@@ -62,7 +77,7 @@ async def upload_document(file: UploadFile = File(...), user: AuthUser = Depends
         _minio().put_object(_BUCKET, key, io.BytesIO(data), len(data),
                             content_type=file.content_type or "application/octet-stream")
 
-    await asyncio.to_thread(_put)
+    await _guarded(_put)
     return {"filename": name, "bytes": len(data), "status": "uploaded; indexing starts within about 30 seconds"}
 
 
@@ -77,4 +92,4 @@ async def list_documents(user: AuthUser = Depends(get_current_user)):
             for o in _minio().list_objects(_BUCKET, prefix=prefix)
         ]
 
-    return {"documents": await asyncio.to_thread(_list)}
+    return {"documents": await _guarded(_list)}

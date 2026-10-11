@@ -32,6 +32,10 @@ from minio import Minio
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from qdrant_client import QdrantClient
 from qdrant_client import models as qm
+from breaker import Breaker
+
+_MINIO_BRK = Breaker('minio')
+_QDRANT_BRK = Breaker('qdrant')
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -313,8 +317,13 @@ async def poll_loop(
     Runs forever; any exception in a single iteration is logged and retried.
     """
     while True:
+        if _MINIO_BRK.is_open or _QDRANT_BRK.is_open:
+            logger.warning('circuit open (minio=%s qdrant=%s): skipping poll', _MINIO_BRK.is_open, _QDRANT_BRK.is_open)
+            await asyncio.sleep(POLL_INTERVAL)
+            continue
         try:
             objects = list(minio_client.list_objects(MINIO_BUCKET, recursive=True))
+            _MINIO_BRK.ok()
             logger.info("Poll: %d objects in bucket", len(objects))
 
             # Count un-ingested objects for the queue-depth gauge
@@ -336,9 +345,14 @@ async def poll_loop(
                     )
 
         except S3Error as exc:
+            if _MINIO_BRK.fail():
+                logger.error('minio circuit breaker opened')
             logger.error("MinIO error during poll: %s", exc)
             INGESTION_ERRORS.labels(reason="minio_error").inc()
         except Exception as exc:
+            if 'qdrant' in (type(exc).__module__ or '').lower() or 'qdrant' in str(exc).lower():
+                if _QDRANT_BRK.fail():
+                    logger.error('qdrant circuit breaker opened')
             logger.exception("Unexpected poll error: %s", exc)
             INGESTION_ERRORS.labels(reason="poll_error").inc()
 

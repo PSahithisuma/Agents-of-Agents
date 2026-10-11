@@ -301,7 +301,7 @@ async def _propose_section(project_id, version, body, user):
 
 
 class _StackIn(BaseModel):
-    stack_profile: Literal["java_spring", "python_fastapi"]
+    stack_profile: Literal["java_spring", "python_fastapi", "dotnet_webapi"]
 
 
 @router.put("/{project_id}/specs/{version}/stack", summary="Choose the generation stack profile for a draft spec")
