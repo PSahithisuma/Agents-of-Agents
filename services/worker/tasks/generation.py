@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 from tasks.postprocess import strip_fences, table_name, postprocess_entity, generate_application_class
-from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event
+from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event, db_audit
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_MODEL = os.getenv("LLM_MODEL", "coder-model")
@@ -1353,3 +1353,30 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     finally:
         if held:
             await _capacity_release(job_id)
+
+
+_run_generation_before_failsafe = run_generation
+
+
+async def run_generation(ctx, job_id, tenant_id, spec_data):
+    # Catch-all: record why a run crashed instead of leaving the job "running".
+    # Returns (not re-raises) so Arq does not retry and regenerate the whole job.
+    try:
+        result = await _run_generation_before_failsafe(ctx, job_id, tenant_id, spec_data)
+    except Exception as e:
+        logger.exception(f"[{job_id}] generation crashed")
+        err = {"error": type(e).__name__, "message": str(e)[:500]}
+        try:
+            await db_mark_done(tenant_id, job_id, "failed", None, err)
+            await db_add_event(tenant_id, job_id, "error", {"stage": "failed", "message": err["message"]})
+            await db_audit(tenant_id, "job.failed", "job", job_id, err)
+        except Exception as e2:
+            logger.warning(f"[{job_id}] could not record crash: {e2}")
+        return {"status": "failed", **err}
+    try:
+        status = result.get("status") if isinstance(result, dict) else None
+        await db_audit(tenant_id, "job.failed" if status == "failed" else "job.completed", "job", job_id,
+                       {"status": status, "files": result.get("files") if isinstance(result, dict) else None})
+    except Exception as e3:
+        logger.warning(f"[{job_id}] audit write failed: {e3}")
+    return result

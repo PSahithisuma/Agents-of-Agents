@@ -32,3 +32,11 @@ async def db_mark_done(tenant_id, job_id, status, result_ref, error=None):
 async def db_add_event(tenant_id, job_id, event_type, payload):
     await _run(tenant_id, "INSERT INTO job_events (tenant_id, job_id, event_type, payload) VALUES ($1, $2, $3, $4::jsonb)",
                uuid.UUID(str(tenant_id)), uuid.UUID(str(job_id)), event_type, json.dumps(payload))
+
+
+async def db_audit(tenant_id, action, resource_type, resource_id, diff=None):
+    # Append-only audit trail (RLS allows INSERT/SELECT only).
+    await _run(tenant_id,
+               "INSERT INTO audit_log (tenant_id, action, resource_type, resource_id, diff_data) VALUES ($1, $2, $3, $4, $5::jsonb)",
+               uuid.UUID(str(tenant_id)), action, resource_type, uuid.UUID(str(resource_id)),
+               json.dumps(diff if diff is not None else {}, default=str))
