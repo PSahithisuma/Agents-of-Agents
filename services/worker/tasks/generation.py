@@ -1097,7 +1097,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     await pub(75, "qa_gate", "Compiling generated project (Maven)...")
     gate_note = ""
     _fix_tried = set()
-    for _round in range(4):
+    for _round in range(5):
         _res = await _compile_check(files, job_id)
         await _save_gate("compile", _round + 1, _res, tenant_id, job_id)
         if _res["status"] == "ok":
@@ -1111,7 +1111,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         if not _drop:
             gate_note = "; COMPILE CHECK FAILED in shared files, repo may not build"
             break
-        _tofix = [en for en in _drop if en not in _fix_tried]
+        _tofix = [en for en in _drop if _ESC_N.get((str(job_id), en), 0) < 2]
         if _tofix:
             _mvn_out = _LAST_COMPILE_OUT.get(str(job_id), "")
             _fixed_any = False
@@ -1608,3 +1608,81 @@ def _provenance_check(files, pkg):
                 continue
             flagged.append({"file": path, "import": name})
     return {"status": "flagged" if flagged else "ok", "count": len(flagged), "flagged": flagged[:20]}
+
+
+import contextvars as _cv
+from tasks import escalation as _escalation
+
+_ESC_CTX = _cv.ContextVar("esc_ctx", default=None)
+_ESC_N = {}
+_fix_entity_files_before_esc = _fix_entity_files
+
+
+def _apply_entity_java(files, en, cfg, pp, ent_sql, new):
+    import re as _r3
+    from tasks.postprocess import postprocess_entity as _ppe3, sql_from_entity as _sfe3
+    cfg2 = {**cfg, "entity": en, "has_status": True}
+    new = _clean_entity(_ppe3(_only_java(strip_fences(new)), cfg2), en)
+    cfg2["has_status"] = bool(_r3.search(r"\bstatus\b", new))
+    sql = _sfe3(new, cfg2)
+    if not sql:
+        return False
+    files[f"src/main/java/{pp}/entity/{en}.java"] = new
+    files[f"src/main/java/{pp}/repository/{en}Repository.java"] = generate_repository(cfg2)
+    files[f"src/main/java/{pp}/service/{en}Service.java"] = generate_service(cfg2)
+    files[f"src/main/java/{pp}/controller/{en}Controller.java"] = generate_controller(cfg2)
+    files[f"src/test/java/{pp}/{en}ServiceTest.java"] = generate_junit_test(cfg2)
+    ent_sql[en] = sql
+    return True
+
+
+async def _fix_entity_files(files, en, cfg, pp, ent_sql, mvn_out):
+    c = _ESC_CTX.get()
+    if not mvn_out or not c:
+        return await _fix_entity_files_before_esc(files, en, cfg, pp, ent_sql, mvn_out)
+    k = (c["job_id"], en)
+    _ESC_N[k] = _ESC_N.get(k, 0) + 1
+    if _ESC_N[k] < 2:
+        return await _fix_entity_files_before_esc(files, en, cfg, pp, ent_sql, mvn_out)
+    try:
+        import re as _r4
+        key = f"src/main/java/{pp}/entity/{en}.java"
+        errs = [ln for ln in mvn_out.splitlines()
+                if "[ERROR]" in ln and _r4.search(r"/" + en + r"(Repository|Service|Controller|ServiceTest)?\.java", ln)]
+        r = await _escalation.try_escalate(c["tenant_id"], c["job_id"], en, files, key, errs, mvn_out, c["vertical"], LLM_URL, LLM_KEY)
+        if r and _apply_entity_java(files, en, cfg, pp, ent_sql, r["java"]):
+            if r.get("usage"):
+                try:
+                    _usage_list().append({"model": r["model"], "prompt_tokens": int(r["usage"].get("prompt_tokens", 0)),
+                                          "completion_tokens": int(r["usage"].get("completion_tokens", 0))})
+                except Exception:
+                    pass
+            logger.warning(f"escalation ({r['source']}) applied to {en}; output re-enters the compile gate (C6)")
+            return True
+    except Exception as e:
+        logger.warning(f"escalation failed for {en}: {e}")
+    return await _fix_entity_files_before_esc(files, en, cfg, pp, ent_sql, mvn_out)
+
+
+_run_generation_before_esc = run_generation
+
+
+async def run_generation(*args, **kwargs):
+    names = ("ctx", "job_id", "tenant_id", "spec_data")
+    a = dict(zip(names, args))
+    a.update(kwargs)
+    jid, tid = str(a.get("job_id")), str(a.get("tenant_id"))
+    sd = a.get("spec_data") or {}
+    vertical = str((sd.get("pack") or sd.get("vertical") or "") if isinstance(sd, dict) else "")
+    tok = _ESC_CTX.set({"job_id": jid, "tenant_id": tid, "vertical": vertical})
+    try:
+        result = await _run_generation_before_esc(*args, **kwargs)
+        try:
+            await _escalation.commit(tid, jid, isinstance(result, dict) and result.get("status") == "failed")
+        except Exception as _ce:
+            logger.warning(f"escalation commit failed: {_ce}")
+    finally:
+        _ESC_CTX.reset(tok)
+        for _k in [x for x in _ESC_N if x[0] == jid]:
+            _ESC_N.pop(_k, None)
+    return result
