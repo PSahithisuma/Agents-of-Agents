@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 from tasks.postprocess import strip_fences, table_name, postprocess_entity, generate_application_class
-from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event, db_audit
+from tasks.dbstatus import db_mark_running, db_mark_done, db_add_event, db_audit, db_gate_report
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_MODEL = os.getenv("LLM_MODEL", "coder-model")
@@ -1080,6 +1080,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     gate_note = ""
     for _round in range(3):
         _res = await _compile_check(files, job_id)
+        await _save_gate("compile", _round + 1, _res, tenant_id, job_id)
         if _res["status"] == "ok":
             gate_note = "; compile check passed"
             break
@@ -1112,6 +1113,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         for _bround in range(3):
             try:
                 _b = await run_boot_check(files, job_id)
+                await _save_gate("boot", _bround + 1, _b, tenant_id, job_id)
             except Exception as _be:
                 logger.error(f"boot gate crashed: {_be}")
                 gate_note += "; boot check unavailable"
@@ -1380,3 +1382,17 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     except Exception as e3:
         logger.warning(f"[{job_id}] audit write failed: {e3}")
     return result
+
+
+_GATE_SEQ = {}
+
+
+async def _save_gate(kind, rnd, res, tenant_id, job_id):
+    # One GateReport row per gate round. Best effort: never breaks the gate.
+    try:
+        n = _GATE_SEQ.get(str(job_id), 0) + 1
+        _GATE_SEQ[str(job_id)] = n
+        report = {"gate": kind, "round": rnd, **dict(res)}
+        await db_gate_report(tenant_id, job_id, n, dict(res).get("status") == "ok", report)
+    except Exception as e:
+        logger.warning(f"[{job_id}] gate report not saved: {e}")

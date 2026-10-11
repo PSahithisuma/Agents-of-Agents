@@ -40,3 +40,11 @@ async def db_audit(tenant_id, action, resource_type, resource_id, diff=None):
                "INSERT INTO audit_log (tenant_id, action, resource_type, resource_id, diff_data) VALUES ($1, $2, $3, $4, $5::jsonb)",
                uuid.UUID(str(tenant_id)), action, resource_type, uuid.UUID(str(resource_id)),
                json.dumps(diff if diff is not None else {}, default=str))
+
+
+async def db_gate_report(tenant_id, job_id, iteration, passed, report):
+    # INSERT only (RLS has no UPDATE policy on gate_reports).
+    await _run(tenant_id,
+               "INSERT INTO gate_reports (tenant_id, job_id, iteration, passed, report_data) VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (job_id, iteration) DO NOTHING",
+               uuid.UUID(str(tenant_id)), uuid.UUID(str(job_id)), int(iteration), bool(passed),
+               json.dumps(report, default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o)))
