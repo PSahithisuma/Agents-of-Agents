@@ -101,6 +101,16 @@ app.include_router(documents.router)
 app.include_router(dashboard.router)
 from routers import spec_review
 app.include_router(spec_review.router)
+from routers import governance
+app.include_router(governance.router)
+
+
+@app.middleware("http")
+async def _api_version_header(request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-API-Version"] = "v1"
+    resp.headers["X-API-Deprecation-Policy"] = "v1 is stable; breaking changes ship under /api/v2 with 6 months notice"
+    return resp
 
 # Prometheus /metrics -- must be called AFTER routers are included
 setup_metrics(app)

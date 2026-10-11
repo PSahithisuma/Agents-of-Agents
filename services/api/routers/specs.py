@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from core.auth import AuthUser, get_current_user
 from core.database import get_tenant_session
+from core.ratelimit import check_rate
 from core.metrics import SPEC_COMPILED, SPEC_COMPILE_DURATION
 from domain_packs.v0.compiler import compile_spec
 from domain_packs.v0.options import OPTION_GRAPH
@@ -371,6 +372,7 @@ class SpecGenerateOut(BaseModel):
 async def generate_from_spec(project_id: UUID, version: int, request: Request, use_cache: bool = False,
                              user: AuthUser = Depends(require_writer)) -> SpecGenerateOut:
     base_url = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
+    await check_rate(str(user.tenant_id), "generate", int(os.environ.get("RATE_GENERATE_PER_HOUR", "30")), 3600)
     async with get_tenant_session(user.tenant_id) as session:
         row = (await session.execute(
             text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id = :pid AND version = :v"),
@@ -380,6 +382,10 @@ async def generate_from_spec(project_id: UUID, version: int, request: Request, u
             raise HTTPException(status_code=404, detail="Spec version not found")
         if row["frozen_at"] is None:
             raise HTTPException(status_code=409, detail="Lock the spec first: POST .../specs/{version}/lock")
+        _left = (await session.execute(
+            text("SELECT budget_usd - spent_usd FROM budgets ORDER BY period_end DESC NULLS LAST LIMIT 1"))).scalar_one_or_none()
+        if _left is not None and float(_left) <= 0:
+            raise HTTPException(status_code=402, detail="tenant budget exhausted; raise the budget to generate")
         if use_cache:
             _hit = (await session.execute(
                 text("""SELECT job_id FROM cache_entries WHERE canonical_hash = :h AND stack_profile = 'java_spring'

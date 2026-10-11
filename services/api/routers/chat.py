@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Body
 from pydantic import BaseModel
 from core.auth import AuthUser, get_current_user
+from core.ratelimit import check_rate
 import httpx, os
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -50,6 +51,7 @@ async def chat_analyze(
     Send any requirement in plain English.
     AI returns a generation plan (pack, entity, files, compliance).
     """
+    await check_rate(str(user.tenant_id), "chat", int(os.environ.get("RATE_CHAT_PER_MIN", "20")), 60)
     prompt = f"""Analyze this software requirement and return a JSON response:
 Requirement: "{body.message}"
 
