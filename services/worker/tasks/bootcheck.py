@@ -165,6 +165,7 @@ async def run_boot_check(files, job_id, startup_timeout=120):
             res["status"] = "fail"
             res["bad"] = parse_failure(log_text, entities)
             causes = " || ".join(l.strip()[:300] for l in lines if any(k in l for k in ("Caused by", "Description:", "Schema-validation", "Unable to", "APPLICATION FAILED")))[:2500]
+            res["causes"] = causes or log_text[-1500:]
             logger.error(f"boot check: app did not start; bad={res['bad']}; causes: {causes}; tail: {log_text[-900:]}")
             return res
 
@@ -187,6 +188,7 @@ async def run_boot_check(files, job_id, startup_timeout=120):
                 else:
                     res["warn"].append(f"{name}: POST {p.status_code}")
         if res["bad"]:
+            res["causes"] = " || ".join(l.strip()[:300] for l in lines[-300:] if "Exception" in l or "ERROR" in l)[:2500]
             res["status"] = "fail"
         return res
     finally:

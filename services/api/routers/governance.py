@@ -66,3 +66,25 @@ async def erasure_request(user: AuthUser = Depends(_admin)):
                         {"t": str(user.tenant_id), "d": json.dumps({"by": str(user.id), "rows": plan})})
     return {"status": "requested", "rows": plan,
             "next": f"operator runs: ops/tenant_erasure.sh {user.tenant_id} --execute (dry run without --execute)"}
+
+
+from pydantic import BaseModel
+
+
+class BudgetIn(BaseModel):
+    budget_usd: float
+    period_days: int = 30
+
+
+@router.put("/budget", summary="Set the tenant budget for a new period (admin). Generation returns 402 when it is spent.")
+async def set_budget(body: BudgetIn, user: AuthUser = Depends(_admin)):
+    if body.budget_usd < 0 or not (1 <= body.period_days <= 366):
+        raise HTTPException(422, "budget_usd must be >= 0 and period_days 1-366")
+    async with get_tenant_session(user.tenant_id) as s:
+        await s.execute(text("""INSERT INTO budgets (tenant_id, budget_usd, spent_usd, period_start, period_end)
+                                VALUES (:t, :b, 0, current_date, current_date + :d)"""),
+                        {"t": str(user.tenant_id), "b": body.budget_usd, "d": body.period_days})
+        await s.execute(text("""INSERT INTO audit_log (tenant_id, action, resource_type, resource_id, diff_data)
+                                VALUES (:t,'budget.set','tenant',:t,cast(:d as jsonb))"""),
+                        {"t": str(user.tenant_id), "d": json.dumps({"by": str(user.id), "budget_usd": body.budget_usd, "period_days": body.period_days})})
+    return {"status": "set", "budget_usd": body.budget_usd, "period_days": body.period_days}

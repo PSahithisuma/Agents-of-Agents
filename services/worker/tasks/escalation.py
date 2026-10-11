@@ -80,8 +80,13 @@ async def try_escalate(tenant_id, job_id, en, files, key, errs, mvn_out, vertica
     old = files.get(key, "")
     sig = ProblemSignature.from_gate_errors("compile", errs, "java_spring", module_type="entity", vertical=vertical)
     sig_text = sig.to_text()
-    rows = await _tx(tenant_id, "SELECT id, fix_data FROM escalation_memory WHERE problem_signature=$1 AND gate_verified ORDER BY use_count DESC LIMIT 3",
-                     sig_text, fetch=True)
+    sig0_text = ProblemSignature.from_gate_errors("compile", errs, "java_spring", module_type="entity", vertical="").to_text()
+    rows = []
+    for _s in (sig_text, sig0_text):
+        rows = await _tx(tenant_id, "SELECT id, fix_data FROM escalation_memory WHERE problem_signature=$1 AND gate_verified ORDER BY use_count DESC LIMIT 3",
+                         _s, fetch=True)
+        if rows:
+            break
     for r in rows:
         fd = r["fix_data"]
         fd = json.loads(fd) if isinstance(fd, str) else (fd or {})
@@ -115,7 +120,7 @@ async def try_escalate(tenant_id, job_id, en, files, key, errs, mvn_out, vertica
         await _decision(tenant_id, job_id, "escalation_call", 0, "FAILED", str(e)[:300], sig_text, t0)
         return None
     toks = int(usage.get("total_tokens", 0))
-    _PENDING.setdefault(job_id, []).append({"en": en, "key": key, "sig": sig_text, "java": text, "source": "model", "mem_id": None,
+    _PENDING.setdefault(job_id, []).append({"en": en, "key": key, "sig": sig_text, "sig0": sig0_text, "java": text, "source": "model", "mem_id": None,
                                             "model": MODEL, "tokens": int(usage.get("prompt_tokens", 0)), "cost": toks / 1000 * COST_PER_1K,
                                             "usage": usage, "files": files})
     return _PENDING[job_id][-1]
@@ -143,7 +148,13 @@ async def commit(tenant_id, job_id, job_failed):
                       uuid.UUID(it["mem_id"]))
         else:
             fixed = files.get(it["key"], "")
-            await _tx(tenant_id, "INSERT INTO escalation_memory (tenant_id, problem_signature, stack_profile, error_class, fix_summary, fix_data, "
-                      "source_job_id, scope, gate_verified, use_count) VALUES ($1,$2,'java_spring','CompileError',$3,$4::jsonb,$5,'tenant',true,0)",
-                      uuid.UUID(tenant_id), it["sig"], f"fixed {it['en']} via {it['model']}",
-                      json.dumps({"entity": it["en"], "java": fixed}), uuid.UUID(job_id))
+            for _sg in dict.fromkeys([it["sig"], it.get("sig0") or it["sig"]]):
+                await _tx(tenant_id, "INSERT INTO escalation_memory (tenant_id, problem_signature, stack_profile, error_class, fix_summary, fix_data, "
+                          "source_job_id, scope, gate_verified, use_count) VALUES ($1,$2,'java_spring','CompileError',$3,$4::jsonb,$5,'tenant',true,0)",
+                          uuid.UUID(tenant_id), _sg, f"fixed {it['en']} via {it['model']}",
+                          json.dumps({"entity": it["en"], "java": fixed}), uuid.UUID(job_id))
+
+
+async def record_spend(tenant_id, job_id):
+    await _tx(tenant_id, "UPDATE budgets SET spent_usd = spent_usd + COALESCE((SELECT sum(cost_usd) FROM llm_calls WHERE job_id=$1),0) "
+              "WHERE id = (SELECT id FROM budgets ORDER BY period_end DESC NULLS LAST LIMIT 1)", uuid.UUID(job_id))
