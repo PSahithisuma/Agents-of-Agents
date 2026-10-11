@@ -442,3 +442,25 @@ _postprocess_entity_before_enumstr = postprocess_entity
 def postprocess_entity(*args, **kwargs):
     res = _postprocess_entity_before_enumstr(*args, **kwargs)
     return fix_enumerated_string(res) if isinstance(res, str) else res
+
+
+def fix_float_scale(code):
+    """scale/precision on a Double/Float column makes Hibernate fail at startup; drop them."""
+    lines = code.split("\n")
+    for i, line in enumerate(lines):
+        if "@Column" in line and ("scale" in line or "precision" in line):
+            j = i
+            while j < len(lines) and "private" not in lines[j] and j - i <= 3:
+                j += 1
+            if j < len(lines) and _re_gv.search(r"\bprivate\s+(?:Double|Float|double|float)\b", lines[j]):
+                new = _re_gv.sub(r",?\s*(?:scale|precision)\s*=\s*\d+", "", line)
+                lines[i] = _re_gv.sub(r"\(\s*,\s*", "(", new)
+    return "\n".join(lines)
+
+
+_postprocess_entity_before_floatscale = postprocess_entity
+
+
+def postprocess_entity(*args, **kwargs):
+    res = _postprocess_entity_before_floatscale(*args, **kwargs)
+    return fix_float_scale(res) if isinstance(res, str) else res
