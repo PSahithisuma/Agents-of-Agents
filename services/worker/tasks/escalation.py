@@ -91,7 +91,7 @@ async def try_escalate(tenant_id, job_id, en, files, key, errs, mvn_out, vertica
         fd = r["fix_data"]
         fd = json.loads(fd) if isinstance(fd, str) else (fd or {})
         if fd.get("entity") == en and fd.get("java"):
-            await _decision(tenant_id, job_id, "escalation_memory", 0, "hit", "reused a stored gate-passed fix", sig_text, t0)
+            await _decision(tenant_id, job_id, "escalation", 0, "NOT_NEEDED", "memory hit: reused a stored gate-passed fix, no external call", sig_text, t0)
             _PENDING.setdefault(job_id, []).append({"en": en, "key": key, "sig": sig_text, "java": fd["java"], "source": "memory",
                                                     "mem_id": str(r["id"]), "model": "", "tokens": 0, "cost": 0.0, "files": files})
             return _PENDING[job_id][-1]
@@ -111,13 +111,13 @@ async def try_escalate(tenant_id, job_id, en, files, key, errs, mvn_out, vertica
               "Return only the full corrected Java class. Keep the package and field names. If a referenced type does not exist, use String. No explanation.")
     ok, found = PIIScanner().scan(prompt)
     if not ok:
-        await _decision(tenant_id, job_id, "escalation_pii", 0, "BLOCKED_PII", "pre-egress scan failed: " + "; ".join(found)[:300], sig_text, t0)
+        await _decision(tenant_id, job_id, "escalation", 0, "NOT_NEEDED", "BLOCKED_PII pre-egress scan failed: " + "; ".join(found)[:300], sig_text, t0)
         return None
     _USED.add(job_id)
     try:
         text, usage = await _call(llm_url, llm_key, prompt)
     except Exception as e:
-        await _decision(tenant_id, job_id, "escalation_call", 0, "FAILED", str(e)[:300], sig_text, t0)
+        await _decision(tenant_id, job_id, "escalation", 0, "NEEDED", "call failed: " + str(e)[:300], sig_text, t0)
         return None
     toks = int(usage.get("total_tokens", 0))
     _PENDING.setdefault(job_id, []).append({"en": en, "key": key, "sig": sig_text, "sig0": sig0_text, "java": text, "source": "model", "mem_id": None,
@@ -133,18 +133,18 @@ async def commit(tenant_id, job_id, job_failed):
         files = it["files"]
         passed = (not job_failed) and it["key"] in files
         t0 = time.time()
-        await _decision(tenant_id, job_id, "escalation_outcome", 0, "gate_pass" if passed else "gate_fail", f"{it['en']} via {it['source']}", it["sig"], t0)
+        await _decision(tenant_id, job_id, "escalation", 0, "NEEDED", f"[outcome:{'gate_pass' if passed else 'gate_fail'}] {it['en']} via {it['source']}", it["sig"], t0)
         await _tx(tenant_id, "INSERT INTO escalation_register (tenant_id, job_id, trigger_reason, avoided_via_memory, memory_hit_id, commercial_model, "
                   "prompt_tokens, cost_usd, outcome, pii_scan_clean) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                   uuid.UUID(tenant_id), uuid.UUID(job_id), "compile_fix_exhausted", it["source"] == "memory",
                   uuid.UUID(it["mem_id"]) if it["mem_id"] else None, it["model"] or None, it["tokens"], it["cost"],
-                  "gate_pass" if passed else "gate_fail", True)
+                  "success" if passed else "failure", True)
         if not passed:
             continue
         if it["source"] == "memory":
             await _tx(tenant_id, "UPDATE escalation_memory SET use_count = use_count + 1, "
-                      "scope = CASE WHEN use_count + 1 >= 3 THEN 'shared' ELSE scope END, "
-                      "promoted_at = CASE WHEN use_count + 1 >= 3 AND scope <> 'shared' THEN now() ELSE promoted_at END WHERE id=$1",
+                      "scope = CASE WHEN use_count + 1 >= 3 THEN 'global' ELSE scope END, "
+                      "promoted_at = CASE WHEN use_count + 1 >= 3 AND scope <> 'global' THEN now() ELSE promoted_at END WHERE id=$1",
                       uuid.UUID(it["mem_id"]))
         else:
             fixed = files.get(it["key"], "")

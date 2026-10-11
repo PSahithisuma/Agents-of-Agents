@@ -88,3 +88,49 @@ async def set_budget(body: BudgetIn, user: AuthUser = Depends(_admin)):
                                 VALUES (:t,'budget.set','tenant',:t,cast(:d as jsonb))"""),
                         {"t": str(user.tenant_id), "d": json.dumps({"by": str(user.id), "budget_usd": body.budget_usd, "period_days": body.period_days})})
     return {"status": "set", "budget_usd": body.budget_usd, "period_days": body.period_days}
+
+
+def _score(gates):
+    def last(kind):
+        g = [x for x in gates if x.get("gate") == kind]
+        return g[-1] if g else None
+    comp, boot, ut, pv = last("compile"), last("boot"), last("unit_tests"), last("provenance")
+    first = next((x for x in gates if x.get("gate") == "compile"), None)
+    parts = {"compile": bool(comp and comp.get("status") == "ok"), "boot": bool(boot and boot.get("status") == "ok"),
+             "unit_tests": bool(ut and ut.get("status") == "ok"), "provenance_clean": pv is None or pv.get("status") == "ok",
+             "compile_first_try": bool(first and first.get("status") == "ok")}
+    weights = {"compile": 30, "boot": 30, "unit_tests": 20, "provenance_clean": 10, "compile_first_try": 10}
+    return sum(weights[k] for k, ok in parts.items() if ok), parts
+
+
+@router.get("/eval", summary="Quality score per recent generation job (compile 30, boot 30, unit tests 20, provenance 10, first-try 10)")
+async def eval_scores(limit: int = 20, user: AuthUser = Depends(get_current_user)):
+    limit = max(1, min(limit, 100))
+    async with get_tenant_session(user.tenant_id) as s:
+        jobs = (await s.execute(text("""SELECT j.id::text AS id, j.status, j.created_at,
+                                        EXTRACT(EPOCH FROM (j.finished_at - j.started_at)) AS secs,
+                                        sp.spec_data->>'app_name' AS app, sp.spec_data->>'vertical' AS vertical
+                                        FROM jobs j LEFT JOIN application_specs sp ON sp.id = j.spec_id
+                                        WHERE j.job_type = 'generation' ORDER BY j.created_at DESC LIMIT :n"""), {"n": limit})).mappings().all()
+        ids = [j["id"] for j in jobs]
+        gates = (await s.execute(text("""SELECT job_id::text AS jid, iteration, report_data FROM gate_reports
+                                         WHERE job_id::text = ANY(CAST(:ids AS text[])) ORDER BY iteration"""), {"ids": ids})).mappings().all()
+        esc = (await s.execute(text("""SELECT job_id::text AS jid, count(*) AS n FROM escalation_register
+                                       WHERE job_id::text = ANY(CAST(:ids AS text[])) GROUP BY 1"""), {"ids": ids})).mappings().all()
+    by_job = {}
+    for g in gates:
+        rd = g["report_data"]
+        by_job.setdefault(g["jid"], []).append(json.loads(rd) if isinstance(rd, str) else rd)
+    esc_n = {e["jid"]: int(e["n"]) for e in esc}
+    out = []
+    for j in jobs:
+        gl = by_job.get(j["id"], [])
+        score, parts = _score(gl)
+        out.append({"job_id": j["id"], "app": j["app"], "vertical": j["vertical"], "status": j["status"],
+                    "seconds": round(float(j["secs"]), 1) if j["secs"] is not None else None,
+                    "compile_rounds": sum(1 for x in gl if x.get("gate") == "compile"), "escalations": esc_n.get(j["id"], 0),
+                    "score": score if gl else None, "checks": parts if gl else None})
+    scored = [o["score"] for o in out if o["score"] is not None]
+    return {"jobs": out, "summary": {"jobs": len(out), "scored": len(scored),
+                                     "mean_score": round(sum(scored) / len(scored), 1) if scored else None,
+                                     "perfect": sum(1 for x in scored if x == 100)}}
