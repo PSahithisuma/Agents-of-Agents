@@ -25,6 +25,7 @@ RUN python -m venv /opt/semgrep && /opt/semgrep/bin/pip install --no-cache-dir "
     && mkdir -p /opt/trivy-cache
 
 # Worker application code
+RUN python -m venv /opt/fastapi-gate && /opt/fastapi-gate/bin/pip install --no-cache-dir "fastapi==0.115.6" "uvicorn==0.34.0" "sqlalchemy==2.0.36" "pydantic==2.10.4" "httpx==0.28.1" "pytest==8.3.4"
 COPY services/worker/ .
 
 # agents/ package lives at project root (mounted as volume in Docker Compose;

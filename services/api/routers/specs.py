@@ -388,9 +388,9 @@ async def generate_from_spec(project_id: UUID, version: int, request: Request, u
             raise HTTPException(status_code=402, detail="tenant budget exhausted; raise the budget to generate")
         if use_cache:
             _hit = (await session.execute(
-                text("""SELECT job_id FROM cache_entries WHERE canonical_hash = :h AND stack_profile = 'java_spring'
+                text("""SELECT job_id FROM cache_entries WHERE canonical_hash = :h AND stack_profile = :sp
                         AND scaffold_version = :sv AND ruleset_version = :rv ORDER BY created_at DESC LIMIT 1"""),
-                {"h": row["canonical_hash"], "sv": os.environ.get("SCAFFOLD_VERSION", "1.0.0"),
+                {"sp": (((row["spec_data"] or {}).get("nfr") or {}).get("extensions") or {}).get("stack_profile") or "java_spring", "h": row["canonical_hash"], "sv": os.environ.get("SCAFFOLD_VERSION", "1.0.0"),
                  "rv": os.environ.get("RULESET_VERSION", "1.0.0")},
             )).scalar_one_or_none()
             if _hit is not None:

@@ -22,6 +22,6 @@ async def write(tenant_id, job_id, spec_data, result):
               "entity_names, entity_count, summary) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) "
               "ON CONFLICT (tenant_id, canonical_hash, stack_profile, scaffold_version, ruleset_version) "
               "DO UPDATE SET job_id=EXCLUDED.job_id, entity_names=EXCLUDED.entity_names, summary=EXCLUDED.summary, created_at=now()",
-              uuid.UUID(tenant_id), h, STACK, SCAFFOLD_VERSION, RULESET_VERSION, uuid.UUID(job_id), vertical,
+              uuid.UUID(tenant_id), h, (((spec_data.get('nfr') or {}).get('extensions') or {}).get('stack_profile') or STACK), SCAFFOLD_VERSION, RULESET_VERSION, uuid.UUID(job_id), vertical,
               json.dumps(names), len(names), summary)
     logger.info(f"semantic cache written for job {job_id} hash {h[:12]}")

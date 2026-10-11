@@ -203,7 +203,7 @@ async def cache_lookup(project_id: UUID, version: int, user: AuthUser = Depends(
             raise HTTPException(404, "Spec version not found")
         rows = (await s.execute(text("""SELECT job_id, canonical_hash, vertical, entity_names, summary, scaffold_version, ruleset_version, created_at
                                         FROM cache_entries WHERE stack_profile=:st ORDER BY created_at DESC LIMIT 50"""),
-                                {"st": STACK})).mappings().all()
+                                {"st": ((row["spec_data"] or {}).get("nfr") or {}).get("extensions", {}).get("stack_profile") or STACK})).mappings().all()
     mine = {e["name"] for e in _current(row["spec_data"])}
     exact, near = None, []
     for r in rows:
@@ -298,3 +298,36 @@ async def _propose_section(project_id, version, body, user):
             {"t": str(user.tenant_id), "p": str(project_id), "v": version, "h": row["canonical_hash"], "sec": body.section,
              "i": instruction, "pr": json.dumps(card, default=str), "u": str(user.id)})).scalar_one()
     return {"amendment_id": str(aid), "status": "pending", **card, "applied": False}
+
+
+class _StackIn(BaseModel):
+    stack_profile: Literal["java_spring", "python_fastapi"]
+
+
+@router.put("/{project_id}/specs/{version}/stack", summary="Choose the generation stack profile for a draft spec")
+async def set_stack(project_id: UUID, version: int, body: _StackIn, user: AuthUser = Depends(require_writer)):
+    async with get_tenant_session(user.tenant_id) as s:
+        row = (await s.execute(text(f"SELECT {_SPEC_COLS} FROM application_specs WHERE project_id=:p AND version=:v"),
+                               {"p": str(project_id), "v": version})).mappings().one_or_none()
+        if row is None:
+            raise HTTPException(404, "Spec version not found")
+        if row["frozen_at"] is not None:
+            raise HTTPException(409, "Spec is locked")
+        nfr = dict((row["spec_data"] or {}).get("nfr") or {})
+        ext = dict(nfr.get("extensions") or {})
+        ext["stack_profile"] = body.stack_profile
+        nfr["extensions"] = ext
+        try:
+            new_dict, new_hash = _apply_section(row["spec_data"], "nfr", nfr)
+        except Exception as exc:
+            raise HTTPException(422, f"cannot rebuild spec: {exc}")
+        upd = (await s.execute(text(f"""UPDATE application_specs SET spec_data=cast(:sd as jsonb), canonical_hash=:h
+                                        WHERE id=:id AND frozen_at IS NULL RETURNING {_SPEC_COLS}"""),
+                               {"sd": json.dumps(new_dict), "h": new_hash, "id": str(row["id"])})).mappings().one_or_none()
+        if upd is None:
+            raise HTTPException(409, "Spec changed or was locked concurrently; retry")
+        await s.execute(text("""INSERT INTO audit_log (tenant_id, action, resource_type, resource_id, diff_data)
+                                VALUES (:t,'spec.stack_set','application_spec',:r,cast(:d as jsonb))"""),
+                        {"t": str(user.tenant_id), "r": str(row["id"]),
+                         "d": json.dumps({"by": str(user.id), "stack_profile": body.stack_profile})})
+    return _spec_out(upd)

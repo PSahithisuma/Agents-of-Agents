@@ -1690,6 +1690,88 @@ async def _fix_entity_files(files, en, cfg, pp, ent_sql, mvn_out):
 _run_generation_before_esc = run_generation
 
 
+async def _run_generation_fastapi(ctx, job_id, tenant_id, spec_data):
+    from tasks import fastapi_stack as _fs
+    redis = ctx["redis"]
+    channel = f"job:{job_id}"
+    repo_name = f"agents-fastapi-{job_id[:8]}"
+
+    async def pub(progress, stage, message):
+        event = json.dumps({"progress": progress, "stage": stage, "message": message,
+                            "ts": datetime.now(timezone.utc).isoformat(), "pack": "python_fastapi"})
+        await redis.publish(channel, event)
+        await db_add_event(tenant_id, job_id, "error" if stage == "failed" else stage, json.loads(event))
+
+    async def fail(msg, extra=None):
+        await db_mark_done(tenant_id, job_id, "failed", None, {"error": msg, **(extra or {})})
+        await pub(100, "failed", msg)
+        try:
+            await db_audit(tenant_id, "job.failed", "job", job_id, {"status": "failed", "stack": "python_fastapi"})
+        except Exception:
+            pass
+        return {"status": "failed", "pack": "python_fastapi", "error": msg}
+
+    try:
+        await db_mark_running(tenant_id, job_id)
+        await pub(10, "planner", "Stack profile python_fastapi: deterministic generation from the Spec IR")
+        files, ents = _fs.generate_files(spec_data)
+        if not ents:
+            return await fail("no entities in spec")
+        await pub(40, "synthesizer", f"Generated {len(files)} files for {len(ents)} entities (FastAPI + SQLAlchemy + pydantic)")
+        await pub(60, "qa_gate", "Gate: compileall + pytest (isolated venv)...")
+        gate = await _fs.run_gate(files, job_id)
+        comp, tests = gate["compile"], gate["tests"]
+        await _save_gate("compile", 1, comp, tenant_id, job_id)
+        if comp.get("status") != "ok":
+            return await fail("compile gate failed: " + str(comp.get("output") or comp.get("status"))[-300:])
+        await _save_gate("boot", 1, {"status": tests.get("status"), "note": "app import + /health via TestClient"}, tenant_id, job_id)
+        await _save_gate("unit_tests", 1, tests, tenant_id, job_id)
+        if tests.get("status") != "ok":
+            return await fail("test gate failed: " + str(tests.get("output") or tests.get("status"))[-300:])
+        note = f"compile ok; {tests.get('tests', 0)} tests passed"
+        try:
+            from tasks.security_scan import run_security_scan
+            await pub(75, "security", "Running security scan (secrets, code, SBOM)...")
+            _sf, _sn = await run_security_scan(files, job_id)
+            files.update(_sf)
+            note += _sn
+        except Exception as _se:
+            logger.error(f"security scan crashed: {_se}")
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(f"{GITEA_URL}/api/v1/user/repos", headers={"Authorization": f"token {GITEA_TOKEN}"},
+                              json={"name": repo_name, "description": "python_fastapi app - Agents of Agents", "auto_init": True})
+            await asyncio.sleep(2)
+        pushed = 0
+        _bad = []
+        for fp, content in files.items():
+            _tp = "APP_README.md" if fp == "README.md" else fp
+            ok_push = await push_file_to_gitea(repo_name, _tp, content)
+            if not ok_push:
+                await asyncio.sleep(1.5)
+                ok_push = await push_file_to_gitea(repo_name, _tp, content)
+            if ok_push:
+                pushed += 1
+                await asyncio.sleep(0.3)
+            else:
+                logger.error(f"[{job_id}] fastapi push failed: {fp} ({len(content)} bytes)")
+                _bad.append(fp)
+        gitea_url = f"https://agents-of-agents.duckdns.org/gitea/vibeforge-admin/{repo_name}"
+        if pushed < len(files):
+            await db_mark_done(tenant_id, job_id, "failed", gitea_url, {"error": "incomplete push", "pushed": pushed, "expected": len(files), "failed_files": _bad})
+            await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea (missing: {', '.join(_bad)[:200]})")
+            return {"status": "failed", "pack": "python_fastapi", "files": pushed, "expected": len(files), "gitea_url": gitea_url}
+        await db_mark_done(tenant_id, job_id, "completed", gitea_url)
+        await pub(100, "completed", f"Done: {len(files)} files pushed to Gitea ({note})")
+        try:
+            await db_audit(tenant_id, "job.completed", "job", job_id, {"status": "completed", "files": len(files), "stack": "python_fastapi"})
+        except Exception:
+            pass
+        return {"status": "completed", "pack": "python_fastapi", "files": len(files), "gitea_url": gitea_url}
+    except Exception as e:
+        logger.exception(f"[{job_id}] fastapi generation crashed")
+        return await fail(f"{type(e).__name__}: {str(e)[:300]}")
+
+
 async def run_generation(*args, **kwargs):
     names = ("ctx", "job_id", "tenant_id", "spec_data")
     a = dict(zip(names, args))
@@ -1699,7 +1781,10 @@ async def run_generation(*args, **kwargs):
     vertical = str((sd.get("pack") or sd.get("vertical") or "") if isinstance(sd, dict) else "")
     tok = _ESC_CTX.set({"job_id": jid, "tenant_id": tid, "vertical": vertical})
     try:
-        result = await _run_generation_before_esc(*args, **kwargs)
+        if isinstance(sd, dict) and (((sd.get("nfr") or {}).get("extensions") or {}).get("stack_profile")) == "python_fastapi":
+            result = await _run_generation_fastapi(a.get("ctx"), jid, tid, sd)
+        else:
+            result = await _run_generation_before_esc(*args, **kwargs)
         try:
             await _escalation.commit(tid, jid, isinstance(result, dict) and result.get("status") == "failed")
         except Exception as _ce:
