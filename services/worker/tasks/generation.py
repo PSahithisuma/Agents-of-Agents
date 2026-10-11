@@ -1154,6 +1154,19 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
             logger.warning(f"boot gate round {_bround + 1}: dropped {_bdrop}")
         else:
             gate_note = "; BOOT CHECK FAILED after 3 rounds, repo may not start"
+    # --- UNIT TEST GATE (reporting for now): run the generated tests ---
+    try:
+        await pub(78, "qa_gate", "Running generated unit tests (Maven)...")
+        _ut = await _unit_test_check(files, job_id)
+        await _save_gate("unit_tests", 1, _ut, tenant_id, job_id)
+        if _ut.get("status") == "ok":
+            gate_note += f"; unit tests passed ({_ut.get('tests', 0)})"
+        elif _ut.get("status") == "fail":
+            gate_note += f"; UNIT TESTS FAILED ({_ut.get('failures', 0) + _ut.get('errors', 0)}/{_ut.get('tests', 0)})"
+        else:
+            gate_note += f"; unit tests {_ut.get('status')}"
+    except Exception as _ue:
+        logger.warning(f"unit test gate crashed: {_ue}")
     _skip_note = (f" (skipped: {', '.join(skipped_entities)})" if skipped_entities else "") + gate_note
     # --- SECURITY SCAN v1 (non-blocking): secrets, code issues, SBOM ---
     try:
@@ -1462,3 +1475,38 @@ async def _fix_entity_files(files, en, cfg, pp, ent_sql, mvn_out):
     except Exception as e:
         logger.warning(f"fixer failed for {en}: {e}")
         return False
+
+
+async def _unit_test_check(files, job_id):
+    # Runs the generated JUnit/Mockito tests. Returns counts parsed from the Surefire summary.
+    import re as _re3, shutil as _sh
+    d = f"/tmp/ut-{job_id}"
+    _sh.rmtree(d, ignore_errors=True)
+    for path, content in files.items():
+        fp = os.path.join(d, path)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w") as f:
+            f.write(content)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "mvn", "-B", "-Dmaven.repo.local=/app/.m2", "test",
+            cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+    except FileNotFoundError:
+        return {"status": "unavailable"}
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"status": "timeout"}
+    finally:
+        _sh.rmtree(d, ignore_errors=True)
+    text = out.decode("utf-8", "replace")
+    m = _re3.findall(r"Tests run: (\d+), Failures: (\d+), Errors: (\d+)", text)
+    tests, fails, errs = (int(m[-1][0]), int(m[-1][1]), int(m[-1][2])) if m else (0, 0, 0)
+    res = {"status": "ok" if proc.returncode == 0 else "fail", "tests": tests, "failures": fails, "errors": errs}
+    if proc.returncode != 0:
+        res["log_tail"] = text[-1500:]
+        logger.error(f"unit tests failed for {job_id}: {text[-1500:]}")
+    return res
