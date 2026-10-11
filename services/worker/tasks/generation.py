@@ -1433,8 +1433,18 @@ async def _fix_entity_files(files, en, cfg, pp, ent_sql, mvn_out):
         prompt = (f"This Java Spring Boot JPA @Entity class {en} fails to compile.\nCompiler errors:\n{err_text}\n\n"
                   f"Current code:\n{old[:6000]}\n\n"
                   f"Fix the errors. Keep package {cfg['package']}.entity and the same fields. "
-                  f"Define or import anything that is missing. Return only the full corrected Java class.")
-        new = strip_fences(await call_groq(prompt, max_tokens=1800))
+                  f"If a referenced type does not exist, change that field to String. "
+                  f"Be compact: no comments, no Javadoc, no helper methods, no Lombok. "
+                  f"Return only the full corrected Java class.")
+        new = None
+        for _try in (1, 2):
+            try:
+                new = strip_fences(await call_groq(prompt, max_tokens=1800 if _try == 1 else 2600))
+                break
+            except Exception as _e:
+                logger.warning(f"fixer attempt {_try} for {en}: {_e}")
+        if not new:
+            return False
         cfg2 = {**cfg, "entity": en, "has_status": True}
         new = _ppe(new, cfg2)
         new = _clean_entity(new, en)
