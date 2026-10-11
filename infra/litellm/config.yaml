@@ -24,7 +24,8 @@ model_list:
   # ── Smart / reasoning model ──────────────────────────────────────────────────
   - model_name: smart-model
     litellm_params:
-      model: groq/qwen/qwen3.8-27b
+      model: groq/openai/gpt-oss-120b
+      reasoning_effort: low
       api_key: os.environ/GROQ_API_KEY
       timeout: 180
       max_retries: 3

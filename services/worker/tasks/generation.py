@@ -1203,6 +1203,7 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     except Exception as _pe:
         logger.warning(f"provenance check failed: {_pe}")
     # --- UNIT TEST GATE (reporting for now): run the generated tests ---
+    _ut_block = None
     try:
         await pub(78, "qa_gate", "Running generated unit tests (Maven)...")
         _ut = await _unit_test_check(files, job_id)
@@ -1211,10 +1212,18 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
             gate_note += f"; unit tests passed ({_ut.get('tests', 0)})"
         elif _ut.get("status") == "fail":
             gate_note += f"; UNIT TESTS FAILED ({_ut.get('failures', 0) + _ut.get('errors', 0)}/{_ut.get('tests', 0)})"
+            _tot = int(_ut.get("tests", 0) or 0)
+            _badn = int(_ut.get("failures", 0) or 0) + int(_ut.get("errors", 0) or 0)
+            _pct = 100.0 * (_tot - _badn) / _tot if _tot else 0.0
+            _minpct = float(os.environ.get("UNIT_TEST_MIN_PASS_PCT", "100"))
+            if _pct < _minpct:
+                _ut_block = f"unit test gate failed: {_tot - _badn}/{_tot} tests passed ({_pct:.0f}%, minimum {_minpct:.0f}%)"
         else:
             gate_note += f"; unit tests {_ut.get('status')}"
     except Exception as _ue:
         logger.warning(f"unit test gate crashed: {_ue}")
+    if _ut_block:
+        raise RuntimeError(_ut_block)
     _skip_note = (f" (skipped: {', '.join(skipped_entities)})" if skipped_entities else "") + gate_note
     # --- SECURITY SCAN v1 (non-blocking): secrets, code issues, SBOM ---
     try:

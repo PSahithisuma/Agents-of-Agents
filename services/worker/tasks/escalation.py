@@ -60,7 +60,7 @@ async def _call(url, key, prompt):
     async with httpx.AsyncClient(timeout=120) as c:
         for _ in range(2):
             r = await c.post(url, headers={"Authorization": f"Bearer {key}"},
-                             json={"model": MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 3500, "temperature": 0.1})
+                             json={"model": MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 6000, "temperature": 0.1})
             if r.status_code != 429:
                 break
             await asyncio.sleep(35)
