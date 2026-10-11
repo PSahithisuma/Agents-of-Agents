@@ -85,6 +85,7 @@ app.add_middleware(
 # Routers
 # ---------------------------------------------------------------------------
 from routers import documents
+from routers import dashboard
 app.include_router(health.router)
 app.include_router(budget.router)
 app.include_router(budget.metrics_router)
@@ -97,6 +98,7 @@ app.include_router(mcp.router)
 app.include_router(settings_router.router)
 app.include_router(domain_packs.router)
 app.include_router(documents.router)
+app.include_router(dashboard.router)
 
 # Prometheus /metrics -- must be called AFTER routers are included
 setup_metrics(app)
