@@ -82,7 +82,7 @@ async def set_budget(body: BudgetIn, user: AuthUser = Depends(_admin)):
         raise HTTPException(422, "budget_usd must be >= 0 and period_days 1-366")
     async with get_tenant_session(user.tenant_id) as s:
         await s.execute(text("""INSERT INTO budgets (tenant_id, budget_usd, spent_usd, period_start, period_end)
-                                VALUES (:t, :b, 0, current_date, current_date + :d)"""),
+                                VALUES (:t, :b, 0, current_date, current_date + CAST(:d AS integer))"""),
                         {"t": str(user.tenant_id), "b": body.budget_usd, "d": body.period_days})
         await s.execute(text("""INSERT INTO audit_log (tenant_id, action, resource_type, resource_id, diff_data)
                                 VALUES (:t,'budget.set','tenant',:t,cast(:d as jsonb))"""),

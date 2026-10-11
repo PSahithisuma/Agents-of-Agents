@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os
+import asyncio, json, os
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -46,10 +46,20 @@ def _parse_delta(txt: str):
 
 
 async def _llm(messages):
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(LLM_URL, headers={"Authorization": f"Bearer {LLM_KEY}"},
-                         json={"model": LLM_MODEL, "messages": messages, "max_tokens": 2500, "temperature": 0.1})
-        return r.json()["choices"][0]["message"]["content"]
+    async with httpx.AsyncClient(timeout=90) as c:
+        for attempt in range(3):
+            r = await c.post(LLM_URL, headers={"Authorization": f"Bearer {LLM_KEY}"},
+                             json={"model": LLM_MODEL, "messages": messages, "max_tokens": 2500, "temperature": 0.1})
+            try:
+                d = r.json()
+            except Exception:
+                d = {"error": r.text[:300]}
+            if "choices" in d:
+                return d["choices"][0]["message"]["content"]
+            if r.status_code == 429 and attempt < 2:
+                await asyncio.sleep(25)
+                continue
+            raise HTTPException(502, f"model call failed ({r.status_code}): {str(d)[:300]}")
 
 
 def _current(spec_data):
