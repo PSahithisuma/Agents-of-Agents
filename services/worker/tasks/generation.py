@@ -1612,6 +1612,7 @@ def _provenance_check(files, pkg):
 
 import contextvars as _cv
 from tasks import escalation as _escalation
+from tasks import semcache as _semcache
 
 _ESC_CTX = _cv.ContextVar("esc_ctx", default=None)
 _ESC_N = {}
@@ -1681,6 +1682,10 @@ async def run_generation(*args, **kwargs):
             await _escalation.commit(tid, jid, isinstance(result, dict) and result.get("status") == "failed")
         except Exception as _ce:
             logger.warning(f"escalation commit failed: {_ce}")
+        try:
+            await _semcache.write(tid, jid, sd, result)
+        except Exception as _se:
+            logger.warning(f"semantic cache write failed: {_se}")
     finally:
         _ESC_CTX.reset(tok)
         for _k in [x for x in _ESC_N if x[0] == jid]:

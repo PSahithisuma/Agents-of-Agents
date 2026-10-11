@@ -99,6 +99,8 @@ app.include_router(settings_router.router)
 app.include_router(domain_packs.router)
 app.include_router(documents.router)
 app.include_router(dashboard.router)
+from routers import spec_review
+app.include_router(spec_review.router)
 
 # Prometheus /metrics -- must be called AFTER routers are included
 setup_metrics(app)

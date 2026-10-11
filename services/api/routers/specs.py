@@ -368,7 +368,7 @@ class SpecGenerateOut(BaseModel):
     response_model=SpecGenerateOut,
     summary="Generate from a LOCKED spec version (no recompilation)",
 )
-async def generate_from_spec(project_id: UUID, version: int, request: Request,
+async def generate_from_spec(project_id: UUID, version: int, request: Request, use_cache: bool = False,
                              user: AuthUser = Depends(require_writer)) -> SpecGenerateOut:
     base_url = (os.environ.get("PUBLIC_BASE_URL") or str(request.base_url)).rstrip("/")
     async with get_tenant_session(user.tenant_id) as session:
@@ -380,6 +380,17 @@ async def generate_from_spec(project_id: UUID, version: int, request: Request,
             raise HTTPException(status_code=404, detail="Spec version not found")
         if row["frozen_at"] is None:
             raise HTTPException(status_code=409, detail="Lock the spec first: POST .../specs/{version}/lock")
+        if use_cache:
+            _hit = (await session.execute(
+                text("""SELECT job_id FROM cache_entries WHERE canonical_hash = :h AND stack_profile = 'java_spring'
+                        AND scaffold_version = :sv AND ruleset_version = :rv ORDER BY created_at DESC LIMIT 1"""),
+                {"h": row["canonical_hash"], "sv": os.environ.get("SCAFFOLD_VERSION", "1.0.0"),
+                 "rv": os.environ.get("RULESET_VERSION", "1.0.0")},
+            )).scalar_one_or_none()
+            if _hit is not None:
+                return SpecGenerateOut(job_id=_hit, project_id=project_id, spec_version=version,
+                                       canonical_hash=row["canonical_hash"],
+                                       stream_url=f"{base_url}/api/v1/jobs/{_hit}/stream", cache_hit=True)
         live = (await session.execute(
             text("""SELECT id FROM jobs WHERE spec_id = :s AND status NOT IN ('failed','cancelled')
                     ORDER BY created_at DESC LIMIT 1"""),
