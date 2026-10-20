@@ -43,6 +43,8 @@ async def _compile_check(files, job_id):
             "mvn", "-q", "-B", "-DskipTests", "-Dmaven.repo.local=/app/.m2", "test-compile",
             cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+        if proc.returncode != 0:
+            shutil.copytree(d, f"/tmp/debug-failed-builds/{job_id}", dirs_exist_ok=True)
     except FileNotFoundError:
         return {"status": "unavailable", "bad": set()}
     except asyncio.TimeoutError:
@@ -1253,10 +1255,11 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
     # Push ALL files to Gitea
     repo_name = f"agents-{pack}-{job_id[:8]}"
     pushed = 0
+    _app_display_name = spec_data.get("app_name") or f"{cfg['compliance']} {pack} app"
     async with httpx.AsyncClient(timeout=30) as client:
         await client.post(f"{GITEA_URL}/api/v1/user/repos",
             headers={"Authorization": f"token {GITEA_TOKEN}"},
-            json={"name": repo_name, "description": f"{cfg['compliance']} {pack} app — Agents of Agents AI", "auto_init": True})
+            json={"name": repo_name, "description": f"{_app_display_name} — Agents of Agents AI", "auto_init": True})
         await asyncio.sleep(2)
 
     for file_path, content in files.items():
@@ -1271,17 +1274,25 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
         await db_mark_done(tenant_id, job_id, "failed", gitea_url, {"error": "incomplete push", "pushed": pushed, "expected": len(files)})
         await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea. Repo may be incomplete: {gitea_url}")
         return {"status": "failed", "pack": pack, "files": pushed, "expected": len(files), "gitea_url": gitea_url}
-    await db_mark_done(tenant_id, job_id, "completed", gitea_url)
+    # Preview result is now awaited BEFORE the job is marked done in the DB, and a
+    # failed preview is recorded in error_detail (not just buried in a message string),
+    # so it's actually queryable later. status stays "completed" (push genuinely
+    # succeeded; status enum has no "completed_preview_failed" value) — the distinct
+    # signal lives in error_detail.
     _pv_url, _pv_msg = None, ""
     try:
         await pub(97, "preview", "Starting live preview (about 2 minutes)...")
         _pv_url, _pv_msg = await _sandbox_preview(job_id, tenant_id, repo_name)
     except Exception as _pe:
         logger.error(f"preview step crashed: {_pe}")
+        _pv_msg = _pv_msg or f"crashed ({str(_pe)[:80]})"
+    _preview_error = None
     if _pv_url:
         _skip_note += f"; live preview (30 min): {_pv_url}"
     elif _pv_msg:
         _skip_note += f"; preview {_pv_msg}"
+        _preview_error = {"preview": "failed", "detail": _pv_msg}
+    await db_mark_done(tenant_id, job_id, "completed", gitea_url, _preview_error)
     await pub(100, "complete", f"Done — {pushed} files pushed, {len(gen_entities)} entities generated{_skip_note}. {cfg['compliance']}-aligned template, not a compliance certification. Repo: {gitea_url}")
     return {"status": "completed", "pack": pack, "tables": cfg["tables"], "files": pushed, "gitea_url": gitea_url}
 
@@ -1291,8 +1302,16 @@ from decimal import Decimal as _Dec
 from datetime import date as _date
 from tasks.dbstatus import _run as _db_run
 
-# USD per 1M tokens (input, output). PLACEHOLDERS: set to your real Groq rates.
-PRICES = {"qwen/qwen3.8-27b": (0.29, 0.59)}
+# USD per 1M tokens (input, output), Groq list prices.
+# gpt-oss-120b is the published rate. qwen3.8-27b has no published rate, so the
+# nearest listed Qwen model (Qwen3 32B) is used as an ESTIMATE.
+PRICES = {
+    "qwen/qwen3.8-27b": (0.29, 0.59),
+    "groq/qwen/qwen3.8-27b": (0.29, 0.59),
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "groq/openai/gpt-oss-120b": (0.15, 0.60),
+    "smart-model": (0.15, 0.60),
+}
 _DEFAULT_PRICE = (0.29, 0.59)
 
 
@@ -1339,12 +1358,12 @@ async def run_generation(ctx, job_id, tenant_id, spec_data):
 
 
 # --- Live preview via sandbox service (non-blocking; failures only noted in the message) ---
-async def _sandbox_preview(job_id, tenant_id, repo_name, wait_s=300):
+async def _sandbox_preview(job_id, tenant_id, repo_name, wait_s=300, stack="java_springboot"):
     import time as _t
     base = os.environ.get("SANDBOX_URL", "http://sandbox:8080").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post(f"{base}/run", json={"job_id": str(job_id), "tenant_id": str(tenant_id), "repo": repo_name})
+            r = await c.post(f"{base}/run", json={"job_id": str(job_id), "tenant_id": str(tenant_id), "repo": repo_name, "stack": stack})
             if r.status_code >= 300:
                 return None, f"not started (HTTP {r.status_code})"
             deadline = _t.time() + wait_s
@@ -1701,10 +1720,10 @@ _run_generation_before_esc = run_generation
 
 async def _run_generation_fastapi(ctx, job_id, tenant_id, spec_data, stack="python_fastapi"):
     from tasks import fastapi_stack as _fa, dotnet_stack as _dn
-    _fs = _dn if stack == "dotnet_webapi" else _fa
+    _fs = _dn if stack == "dotnet" else _fa
     redis = ctx["redis"]
     channel = f"job:{job_id}"
-    repo_name = f"agents-{'dotnet' if stack == 'dotnet_webapi' else 'fastapi'}-{job_id[:8]}"
+    repo_name = f"agents-{'dotnet' if stack == 'dotnet' else 'fastapi'}-{job_id[:8]}"
 
     async def pub(progress, stage, message):
         event = json.dumps({"progress": progress, "stage": stage, "message": message,
@@ -1747,9 +1766,10 @@ async def _run_generation_fastapi(ctx, job_id, tenant_id, spec_data, stack="pyth
             note += _sn
         except Exception as _se:
             logger.error(f"security scan crashed: {_se}")
+        _app_display_name2 = spec_data.get("app_name") or f"{stack} app"
         async with httpx.AsyncClient(timeout=30) as client:
             await client.post(f"{GITEA_URL}/api/v1/user/repos", headers={"Authorization": f"token {GITEA_TOKEN}"},
-                              json={"name": repo_name, "description": f"{stack} app - Agents of Agents", "auto_init": True})
+                              json={"name": repo_name, "description": f"{_app_display_name2} — Agents of Agents AI", "auto_init": True})
             await asyncio.sleep(2)
         pushed = 0
         _bad = []
@@ -1770,8 +1790,22 @@ async def _run_generation_fastapi(ctx, job_id, tenant_id, spec_data, stack="pyth
             await db_mark_done(tenant_id, job_id, "failed", gitea_url, {"error": "incomplete push", "pushed": pushed, "expected": len(files), "failed_files": _bad})
             await pub(100, "failed", f"Only {pushed}/{len(files)} files reached Gitea (missing: {', '.join(_bad)[:200]})")
             return {"status": "failed", "pack": stack, "files": pushed, "expected": len(files), "gitea_url": gitea_url}
-        await db_mark_done(tenant_id, job_id, "completed", gitea_url)
-        await pub(100, "completed", f"Done: {len(files)} files pushed to Gitea ({note})")
+        _pv_url, _pv_msg = None, ""
+        try:
+            await pub(97, "preview", "Starting live preview...")
+            _pv_url, _pv_msg = await _sandbox_preview(job_id, tenant_id, repo_name, stack=stack)
+        except Exception as _pe:
+            logger.error(f"preview step crashed: {_pe}")
+            _pv_msg = _pv_msg or f"crashed ({str(_pe)[:80]})"
+        _preview_note = ""
+        _preview_error = None
+        if _pv_url:
+            _preview_note = f"; live preview (30 min): {_pv_url}"
+        elif _pv_msg:
+            _preview_note = f"; preview {_pv_msg}"
+            _preview_error = {"preview": "failed", "detail": _pv_msg}
+        await db_mark_done(tenant_id, job_id, "completed", gitea_url, _preview_error)
+        await pub(100, "completed", f"Done: {len(files)} files pushed to Gitea ({note}){_preview_note}. Repo: {gitea_url}")
         try:
             await db_audit(tenant_id, "job.completed", "job", job_id, {"status": "completed", "files": len(files), "stack": stack})
         except Exception:
@@ -1792,7 +1826,7 @@ async def run_generation(*args, **kwargs):
     tok = _ESC_CTX.set({"job_id": jid, "tenant_id": tid, "vertical": vertical})
     try:
         _stk = ((sd.get("nfr") or {}).get("extensions") or {}).get("stack_profile") if isinstance(sd, dict) else None
-        if _stk in ("python_fastapi", "dotnet_webapi"):
+        if _stk in ("python_fastapi", "dotnet"):
             result = await _run_generation_fastapi(a.get("ctx"), jid, tid, sd, _stk)
         else:
             result = await _run_generation_before_esc(*args, **kwargs)

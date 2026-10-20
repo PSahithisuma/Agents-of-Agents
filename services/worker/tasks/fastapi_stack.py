@@ -126,9 +126,18 @@ def generate_files(spec):
     imports = "".join(f"from .routers import {e['path']} as r_{e['path']}\n" for e in ents)
     inc = "".join(f"app.include_router(r_{e['path']}.router)\n" for e in ents)
     f["app/main.py"] = ("from fastapi import FastAPI\nfrom .database import Base, engine\nfrom . import models  # noqa: F401\n" + imports +
-                        "\nBase.metadata.create_all(bind=engine)\n"
+                        "\nimport os\nfrom starlette.types import ASGIApp, Receive, Scope, Send\n\n"
+                        "class _StripPrefixMiddleware:\n"
+                        "    def __init__(self, app: ASGIApp, prefix: str):\n"
+                        "        self.app = app\n        self.prefix = prefix.rstrip(\"/\")\n\n"
+                        "    async def __call__(self, scope: Scope, receive: Receive, send: Send):\n"
+                        "        if scope[\"type\"] == \"http\" and self.prefix and scope[\"path\"].startswith(self.prefix):\n"
+                        "            scope = dict(scope)\n            scope[\"path\"] = scope[\"path\"][len(self.prefix):] or \"/\"\n"
+                        "        await self.app(scope, receive, send)\n\n\n"
+                        "Base.metadata.create_all(bind=engine)\n"
                         f"app = FastAPI(title={app!r}, version=\"1.0.0\")\n\n\n"
-                        "@app.get(\"/health\")\ndef health():\n    return {\"status\": \"ok\"}\n\n\n" + inc)
+                        "@app.get(\"/health\")\ndef health():\n    return {\"status\": \"ok\"}\n\n\n" + inc +
+                        "\napp = _StripPrefixMiddleware(app, os.environ.get(\"PATH_PREFIX\", \"\"))\n")
     t = ["import os", "import tempfile", "", "os.environ[\"DATABASE_URL\"] = \"sqlite:///\" + os.path.join(tempfile.mkdtemp(), \"test.db\")", "",
          "from fastapi.testclient import TestClient", "from app.main import app", "", "client = TestClient(app)", "", "",
          "def test_health():", "    assert client.get(\"/health\").json()[\"status\"] == \"ok\""]

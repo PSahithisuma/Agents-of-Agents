@@ -85,7 +85,8 @@ def generate_files(spec):
                        "ENV ASPNETCORE_URLS=http://+:8080\nEXPOSE 8080\nENTRYPOINT [\"dotnet\", \"Api.dll\"]\n")
     f["src/Api/Api.csproj"] = ('<Project Sdk="Microsoft.NET.Sdk.Web">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n'
                                '    <Nullable>disable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <RootNamespace>Api</RootNamespace>\n  </PropertyGroup>\n'
-                               '  <ItemGroup>\n    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />\n  </ItemGroup>\n</Project>\n')
+                               '  <ItemGroup>\n    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />\n'
+                               '    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />\n  </ItemGroup>\n</Project>\n')
     f["tests/Api.Tests/Api.Tests.csproj"] = (
         '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Nullable>disable</Nullable>\n'
         '    <ImplicitUsings>enable</ImplicitUsings>\n    <IsPackable>false</IsPackable>\n  </PropertyGroup>\n  <ItemGroup>\n'
@@ -98,8 +99,14 @@ def generate_files(spec):
         "var builder = WebApplication.CreateBuilder(args);\n"
         "var cs = builder.Configuration[\"DATABASE_URL\"] ?? \"Data Source=app.db\";\n"
         "builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(cs));\n"
-        "builder.Services.AddControllers();\n\nvar app = builder.Build();\n"
+        "builder.Services.AddControllers();\n"
+        "builder.Services.AddEndpointsApiExplorer();\n"
+        "builder.Services.AddSwaggerGen();\n\n"
+        "var app = builder.Build();\n"
+        "var pathBase = builder.Configuration[\"PATH_BASE\"];\n"
+        "if (!string.IsNullOrEmpty(pathBase)) app.UsePathBase(pathBase);\n"
         "using (var scope = app.Services.CreateScope())\n{\n    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreated();\n}\n"
+        "app.UseSwagger();\napp.UseSwaggerUI();\n"
         "app.MapGet(\"/health\", () => Results.Ok(new { status = \"ok\" }));\napp.MapControllers();\napp.Run();\n\npublic partial class Program { }\n")
     ctx = ["using Api.Models;", "using Microsoft.EntityFrameworkCore;", "", "namespace Api.Data;", "",
            "public class AppDbContext : DbContext", "{", "    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }"]

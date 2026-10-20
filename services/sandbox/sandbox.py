@@ -73,7 +73,7 @@ def dkr() -> docker.DockerClient:
 class RunRequest(BaseModel):
     job_id: str
     tenant_id: str = "default"
-    stack: Literal["java_springboot"] = "java_springboot"
+    stack: Literal["java_springboot", "python_fastapi", "dotnet"] = "java_springboot"
     repo: Optional[str] = None          # Gitea repo name; derived from the job's result link when omitted
 
 
@@ -143,8 +143,9 @@ def load_report(job_id: str) -> Optional[dict]:
         return json.load(f)
 
 
-def preview_url_for(token: str) -> str:
-    return f"{PUBLIC_BASE_URL}/preview/{token}/swagger-ui.html"
+def preview_url_for(token: str, stack: str = "java_springboot") -> str:
+    path = {"java_springboot": "swagger-ui.html", "python_fastapi": "docs", "dotnet": "swagger"}.get(stack, "")
+    return f"{PUBLIC_BASE_URL}/preview/{token}/{path}"
 
 
 def _app_containers() -> list:
@@ -204,15 +205,38 @@ async def _fetch_repo(repo: str) -> bytes:
 
 
 def _build_sync(tar_bytes: bytes, tag: str) -> str:
+    # dkr().images.build() (docker-py high-level helper) internally uses itertools.tee()
+    # to parse the build-log stream and crashes with "'itertools._tee' object is not
+    # subscriptable" against this daemon's (BuildKit-style) stream format. Bypass it and
+    # use the low-level API client, parsing the JSON build-log stream ourselves.
+    api = dkr().api
+    image_id = None
+    log_lines: list[str] = []
     try:
-        img, logs = dkr().images.build(
-            fileobj=io.BytesIO(tar_bytes), custom_context=True, tag=tag, rm=True, forcerm=True,
-            timeout=BUILD_TIMEOUT, labels={LABEL: "1"},
-            container_limits={"memory": 2 * 1024 ** 3, "memswap": 2 * 1024 ** 3, "cpushares": 512})
-        return img.id
-    except docker.errors.BuildError as e:
-        tail = " | ".join(str(x.get("stream") or x.get("error") or "").strip() for x in (e.build_log or [])[-8:])
-        raise RuntimeError(f"docker build failed: {tail[-600:]}") from e
+        for chunk in api.build(
+                fileobj=io.BytesIO(tar_bytes), custom_context=True, tag=tag, rm=True, forcerm=True,
+                timeout=BUILD_TIMEOUT, labels={LABEL: "1"}, decode=True,
+                container_limits={"memory": 2 * 1024 ** 3, "memswap": 2 * 1024 ** 3, "cpushares": 512}):
+            if "stream" in chunk and chunk["stream"].strip():
+                log_lines.append(chunk["stream"].strip())
+            if "error" in chunk:
+                tail = " | ".join(log_lines[-8:])
+                raise RuntimeError(f"docker build failed: {(tail + ' | ' + chunk['error'])[-600:]}")
+            aux = chunk.get("aux")
+            if isinstance(aux, dict) and aux.get("ID"):
+                image_id = aux["ID"]
+        if not image_id:
+            try:
+                image_id = dkr().images.get(tag).id
+            except Exception:                                       # noqa: BLE001
+                pass
+        if not image_id:
+            tail = " | ".join(log_lines[-8:])
+            raise RuntimeError(f"docker build finished without an image id: {tail[-600:]}")
+        return image_id
+    except docker.errors.APIError as e:
+        tail = " | ".join(log_lines[-8:])
+        raise RuntimeError(f"docker build failed: {(tail + ' | ' + str(e))[-600:]}") from e
 
 
 def _start_sync(jid: str, token: str, expires: float, db_password: str) -> tuple[str, str]:
@@ -230,17 +254,23 @@ def _start_sync(jid: str, token: str, expires: float, db_password: str) -> tuple
     return pg_name, app_name
 
 
-def _start_app_sync(jid: str, token: str, expires: float, pg_name: str, app_name: str, db_password: str) -> None:
-    dkr().containers.run(
-        f"vf-sbx-{jid}", name=app_name, detach=True, network=f"vf-net-{jid}",
-        environment={
+def _start_app_sync(jid: str, token: str, expires: float, pg_name: str, app_name: str, db_password: str, stack: str = "java_springboot") -> None:
+    if stack == "java_springboot":
+        env = {
             "SPRING_DATASOURCE_URL": f"jdbc:postgresql://{pg_name}:5432/appdb",
             "SPRING_DATASOURCE_USERNAME": "postgres",
             "SPRING_DATASOURCE_PASSWORD": db_password,
             "SERVER_SERVLET_CONTEXT_PATH": f"/preview/{token}",
             "SERVER_FORWARD_HEADERS_STRATEGY": "framework",
             "JAVA_OPTS": "-Xmx384m -Xms128m",
-        },
+        }
+    elif stack == "python_fastapi":
+        env = {"DATABASE_URL": "sqlite:////tmp/app.db", "PATH_PREFIX": f"/preview/{token}"}
+    else:  # dotnet
+        env = {"DATABASE_URL": "Data Source=/tmp/app.db", "PATH_BASE": f"/preview/{token}"}
+    dkr().containers.run(
+        f"vf-sbx-{jid}", name=app_name, detach=True, network=f"vf-net-{jid}",
+        environment=env,
         labels={LABEL: "1", "vf.job": jid, "vf.role": "app", "vf.token": token, "vf.expires": str(expires)},
         mem_limit="768m", memswap_limit="768m", nano_cpus=1_000_000_000, pids_limit=256,
         cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
@@ -322,20 +352,33 @@ async def run_job(req: RunRequest, repo: str) -> None:
             box["pg"], box["app"] = pg, ap
             if not await _wait_tcp(pg, 5432, 90):
                 raise RuntimeError("database did not start")
-            await asyncio.to_thread(_start_app_sync, jid, token, expires, pg, ap, db_pw)
+            await asyncio.to_thread(_start_app_sync, jid, token, expires, pg, ap, db_pw, req.stack)
             _tokens[token] = (ap, expires)
             return {"app": ap}
 
         async def health():
-            ok_, last = await _http_ok(f"http://{box['app']}:8080/preview/{token}/actuator/health", HEALTH_TIMEOUT, True)
+            if req.stack == "java_springboot":
+                hpath = f"http://{box['app']}:8080/preview/{token}/actuator/health"
+                want_up = True
+            else:
+                hpath = f"http://{box['app']}:8080/preview/{token}/health"
+                want_up = False
+            ok_, last = await _http_ok(hpath, HEALTH_TIMEOUT, want_up)
             if not ok_:
                 raise RuntimeError(f"app did not become healthy ({last}). Logs: {await asyncio.to_thread(_logs_sync, box['app'])}")
             return {"status": "UP"}
 
         async def docs():
             base = f"http://{box['app']}:8080/preview/{token}"
-            a, la = await _http_ok(f"{base}/api-docs", 30)
-            b, lb = await _http_ok(f"{base}/swagger-ui.html", 30)
+            if req.stack == "java_springboot":
+                a, la = await _http_ok(f"{base}/api-docs", 30)
+                b, lb = await _http_ok(f"{base}/swagger-ui.html", 30)
+            elif req.stack == "python_fastapi":
+                a, la = await _http_ok(f"{base}/openapi.json", 30)
+                b, lb = await _http_ok(f"{base}/docs", 30)
+            else:  # dotnet
+                a, la = await _http_ok(f"{base}/swagger/v1/swagger.json", 30)
+                b, lb = await _http_ok(f"{base}/swagger", 30)
             if not (a and b):
                 raise RuntimeError(f"api-docs: {la}, swagger-ui: {lb}")
             return {"api-docs": "200", "swagger-ui": "200"}
@@ -343,7 +386,7 @@ async def run_job(req: RunRequest, repo: str) -> None:
         ok = (await step("fetch", fetch) and await step("build", build) and await step("start", start)
               and await step("health", health) and await step("docs", docs))
         if ok:
-            preview = preview_url_for(token)
+            preview = preview_url_for(token, req.stack)
             expires_at = datetime.fromtimestamp(box["expires"], timezone.utc)
     finally:
         rep = GateReport(job_id=req.job_id, tenant_id=req.tenant_id, stack=req.stack,
